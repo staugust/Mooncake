@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <cctype>
 #include <optional>
+#include <cstring>
+#include <limits>
 #include <vector>
 
 #include "real_client.h"
@@ -24,6 +26,19 @@
 #include "default_config.h"
 
 namespace mooncake {
+
+namespace {
+const Replica::Descriptor* SelectCompleteMemoryReplica(
+    const std::vector<Replica::Descriptor>& replicas) {
+    for (const auto& replica : replicas) {
+        if (replica.status == ReplicaStatus::COMPLETE &&
+            replica.is_memory_replica()) {
+            return &replica;
+        }
+    }
+    return nullptr;
+}
+}  // namespace
 
 PyClient::~PyClient() {}
 
@@ -1516,6 +1531,179 @@ RealClient::batch_get_into_multi_buffers_internal(
 
     return client_service_->BatchGet(keys, all_buffers, all_sizes, config,
                                      prefer_alloc_in_same_node);
+}
+
+std::vector<int> RealClient::batch_get_session_start(
+    const std::vector<std::string>& keys) {
+    std::vector<int> results(
+        keys.size(), static_cast<int>(toInt(ErrorCode::INVALID_PARAMS)));
+    if (!client_service_) {
+        LOG(ERROR) << "RealClient is not initialized";
+        return results;
+    }
+    if (keys.empty()) {
+        return {};
+    }
+
+    auto query_results = client_service_->BatchQuery(keys);
+    if (query_results.size() != keys.size()) {
+        LOG(ERROR) << "batch_get_session_start size mismatch: keys="
+                   << keys.size() << ", results=" << query_results.size();
+        return results;
+    }
+
+    std::lock_guard<std::mutex> lock(session_mutex_);
+    for (size_t i = 0; i < keys.size(); ++i) {
+        if (!query_results[i]) {
+            get_sessions_.erase(keys[i]);
+            results[i] = static_cast<int>(toInt(query_results[i].error()));
+            continue;
+        }
+
+        const auto* replica =
+            SelectCompleteMemoryReplica(query_results[i].value()->replicas);
+        if (replica == nullptr) {
+            get_sessions_.erase(keys[i]);
+            results[i] = static_cast<int>(toInt(ErrorCode::INVALID_REPLICA));
+            continue;
+        }
+
+        get_sessions_.erase(keys[i]);
+        get_sessions_.emplace(
+            keys[i], QueryResult(std::vector<Replica::Descriptor>{*replica}));
+        results[i] = 0;
+    }
+    return results;
+}
+
+std::vector<int> RealClient::batch_get_into_multi_buffer_ranges(
+    const std::vector<std::string>& keys,
+    const std::vector<std::vector<void*>>& all_buffers,
+    const std::vector<std::vector<size_t>>& all_sizes,
+    const std::vector<std::vector<size_t>>& all_src_offsets) {
+    std::vector<int> results(
+        keys.size(), static_cast<int>(toInt(ErrorCode::INVALID_PARAMS)));
+    if (!client_service_) {
+        LOG(ERROR) << "RealClient is not initialized";
+        return results;
+    }
+    if (keys.size() != all_buffers.size() || keys.size() != all_sizes.size() ||
+        keys.size() != all_src_offsets.size()) {
+        LOG(ERROR) << "Invalid batch_get_into_multi_buffer_ranges arguments";
+        return results;
+    }
+
+    std::vector<std::vector<char>> staging_buffers(keys.size());
+    std::vector<std::vector<void*>> batch_buffers;
+    std::vector<std::vector<size_t>> batch_sizes;
+    std::vector<std::string> batch_keys;
+    std::vector<size_t> batch_indices;
+    batch_buffers.reserve(keys.size());
+    batch_sizes.reserve(keys.size());
+    batch_keys.reserve(keys.size());
+    batch_indices.reserve(keys.size());
+
+    {
+        std::lock_guard<std::mutex> lock(session_mutex_);
+        for (size_t i = 0; i < keys.size(); ++i) {
+            const auto& buffers = all_buffers[i];
+            const auto& sizes = all_sizes[i];
+            const auto& offsets = all_src_offsets[i];
+            if (buffers.empty() || buffers.size() != sizes.size() ||
+                buffers.size() != offsets.size()) {
+                continue;
+            }
+
+            auto session = get_sessions_.find(keys[i]);
+            if (session == get_sessions_.end() ||
+                session->second.replicas.empty()) {
+                continue;
+            }
+
+            const auto& replica = session->second.replicas.front();
+            const uint64_t object_size = calculate_total_size(replica);
+            if (object_size > std::numeric_limits<size_t>::max()) {
+                results[i] =
+                    static_cast<int>(toInt(ErrorCode::BUFFER_OVERFLOW));
+                continue;
+            }
+
+            const size_t object_size_size = static_cast<size_t>(object_size);
+            bool valid = true;
+            size_t expected_bytes = 0;
+            for (size_t j = 0; j < buffers.size(); ++j) {
+                if (buffers[j] == nullptr || sizes[j] > object_size_size ||
+                    offsets[j] > object_size_size - sizes[j] ||
+                    sizes[j] >
+                        std::numeric_limits<size_t>::max() - expected_bytes) {
+                    valid = false;
+                    break;
+                }
+                expected_bytes += sizes[j];
+            }
+            if (!valid) {
+                results[i] = static_cast<int>(toInt(ErrorCode::INVALID_PARAMS));
+                continue;
+            }
+
+            staging_buffers[i].resize(object_size_size);
+            batch_buffers.emplace_back(
+                1, static_cast<void*>(staging_buffers[i].data()));
+            batch_sizes.emplace_back(1, object_size_size);
+            batch_keys.push_back(keys[i]);
+            batch_indices.push_back(i);
+        }
+    }
+
+    if (batch_keys.empty()) {
+        return results;
+    }
+
+    auto transfer_results = batch_get_into_multi_buffers_internal(
+        batch_keys, batch_buffers, batch_sizes, false, ReadRouteConfig{});
+    if (transfer_results.size() != batch_keys.size()) {
+        for (const auto index : batch_indices) {
+            results[index] = static_cast<int>(toInt(ErrorCode::INTERNAL_ERROR));
+        }
+        return results;
+    }
+
+    for (size_t j = 0; j < batch_keys.size(); ++j) {
+        const size_t index = batch_indices[j];
+        if (!transfer_results[j]) {
+            results[index] =
+                static_cast<int>(toInt(transfer_results[j].error()));
+            continue;
+        }
+
+        const auto& buffers = all_buffers[index];
+        const auto& sizes = all_sizes[index];
+        const auto& offsets = all_src_offsets[index];
+        const auto& staging_buffer = staging_buffers[index];
+        size_t transferred_bytes = 0;
+        bool valid = true;
+        for (size_t k = 0; k < buffers.size(); ++k) {
+            if (offsets[k] + sizes[k] > staging_buffer.size()) {
+                valid = false;
+                break;
+            }
+            std::memcpy(buffers[k], staging_buffer.data() + offsets[k],
+                        sizes[k]);
+            transferred_bytes += sizes[k];
+        }
+        results[index] =
+            valid ? static_cast<int>(transferred_bytes)
+                  : static_cast<int>(toInt(ErrorCode::INVALID_PARAMS));
+    }
+    return results;
+}
+
+int RealClient::batch_get_session_end(const std::vector<std::string>& keys) {
+    std::lock_guard<std::mutex> lock(session_mutex_);
+    for (const auto& key : keys) {
+        get_sessions_.erase(key);
+    }
+    return 0;
 }
 
 tl::expected<DummyHeartbeatResponse, ErrorCode> RealClient::ping(

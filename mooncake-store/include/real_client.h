@@ -8,10 +8,12 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <unordered_map>
 #include <condition_variable>
 #include <mutex>
 
 #include "pyclient.h"
+#include "client_service.h"
 #include "client_buffer.hpp"
 #include "mutex.h"
 #include "utils.h"
@@ -204,6 +206,17 @@ class RealClient : public PyClient {
         const std::vector<std::vector<void*>>& all_buffers,
         const std::vector<std::vector<size_t>>& all_sizes,
         const WriteConfig& config) override;
+
+    std::vector<int> batch_get_session_start(
+        const std::vector<std::string>& keys) override;
+
+    std::vector<int> batch_get_into_multi_buffer_ranges(
+        const std::vector<std::string>& keys,
+        const std::vector<std::vector<void*>>& all_buffers,
+        const std::vector<std::vector<size_t>>& all_sizes,
+        const std::vector<std::vector<size_t>>& all_src_offsets) override;
+
+    int batch_get_session_end(const std::vector<std::string>& keys) override;
 
     int put_parts(const std::string& key,
                   std::vector<std::span<const char>> values,
@@ -486,6 +499,11 @@ class RealClient : public PyClient {
         shm_contexts_ GUARDED_BY(dummy_client_mutex_);
 
     std::shared_ptr<ShmContext> find_shm_context(const UUID& client_id);
+
+    // Session state for ranged reads. Only the chosen complete memory replica
+    // is cached, so range reads do not query the master again between layers.
+    mutable std::mutex session_mutex_;
+    std::unordered_map<std::string, QueryResult> get_sessions_;
 
     // Ensure cleanup executes at most once across multiple entry points
     std::atomic<bool> closed_{false};
