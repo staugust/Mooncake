@@ -6,6 +6,8 @@
 #include "client_config_builder.h"
 #include "real_client.h"
 
+#include "tracing.h"
+
 using namespace mooncake;
 
 DEFINE_string(host, "0.0.0.0", "Local hostname");
@@ -89,6 +91,11 @@ DEFINE_bool(enable_client_metric_collection, true,
 DEFINE_uint64(metric_report_interval_seconds, 60,
               "Interval (seconds) for periodic client metric reporting. "
               "0 disables periodic reporting (metrics are still collected).");
+DEFINE_string(otlp_traces_endpoint, "",
+              "OTLP/HTTP traces collector endpoint for OpenTelemetry tracing "
+              "(e.g. http://collector:4318/v1/traces). When empty, tracing "
+              "is disabled. Requires building with "
+              "MOONCAKE_ENABLE_OTEL_TRACING=ON; otherwise this flag is a no-op.");
 
 namespace mooncake {
 void RegisterClientRpcService(coro_rpc::coro_rpc_server& server,
@@ -133,6 +140,7 @@ int main(int argc, char* argv[]) {
     mooncake::ResourceTracker::getInstance();
 
     gflags::ParseCommandLineFlags(&argc, &argv, true);
+    mooncake::InitTracing(FLAGS_otlp_traces_endpoint, "mooncake-real-client");
     // when separately deploy real client,
     // local buffer is shared by dummy client,
     // real client does not have local buffer

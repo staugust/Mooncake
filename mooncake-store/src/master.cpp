@@ -1,6 +1,8 @@
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 
+#include "tracing.h"
+
 #include <chrono>  // For std::chrono
 #include <csignal>
 #include <memory>  // For std::unique_ptr
@@ -170,6 +172,11 @@ DEFINE_int32(redis_db_index, 0, "Redis database index (default: 0)");
 DEFINE_int32(
     redis_master_view_ttl_sec, 4,
     "TTL in seconds for the leader key in Redis election (default: 4)");
+DEFINE_string(otlp_traces_endpoint, "",
+              "OTLP/HTTP traces collector endpoint for OpenTelemetry tracing "
+              "(e.g. http://collector:4318/v1/traces). When empty, tracing "
+              "is disabled. Requires building with "
+              "MOONCAKE_ENABLE_OTEL_TRACING=ON; otherwise this flag is a no-op.");
 DEFINE_int32(redis_heartbeat_interval_sec, 1,
              "KeepLeader heartbeat interval in seconds for Redis election "
              "(default: 1, should be < ttl)");
@@ -710,6 +717,8 @@ int main(int argc, char* argv[]) {
     mooncake::init_ylt_log_level();
     // Initialize gflags
     gflags::ParseCommandLineFlags(&argc, &argv, true);
+
+    mooncake::InitTracing(FLAGS_otlp_traces_endpoint, "mooncake-master");
 
     if (!FLAGS_log_dir.empty()) {
         google::InitGoogleLogging(argv[0]);

@@ -1,6 +1,7 @@
 #include "centralized_rpc_service.h"
 #include "centralized_master_metric_manager.h"
 #include "request_context.h"
+#include "tracing.h"
 #include "rpc_helper.h"
 #include <csignal>
 
@@ -125,14 +126,19 @@ void WrappedCentralizedMasterService::PutStart(
     // send_request_with_attachment), delegate to the value-returning
     // PutStartInternal (shared with in-process tests), and reply via
     // ctx.response_msg.
+    RequestContext req_ctx;
     if (auto att = ctx.get_context_info()->release_request_attachment();
         !att.empty()) {
-        auto req_ctx = deserialize_request_context(att);
+        req_ctx = deserialize_request_context(att);
         VLOG(1) << "PutStart request_id=" << req_ctx.request_id
                 << " trace_id=" << req_ctx.trace_id;
     }
+    // OpenTelemetry: hop-B SERVER span, child of the propagated trace context
+    // (the real_client hop-A span). No-op when tracing is disabled.
+    ScopedSpan hop_b_span("mooncake-master", "master.put_start", &req_ctx);
 
     auto result = PutStartInternal(client_id, key, slice_length, config);
+    if (!result.has_value()) hop_b_span.SetError(toString(result.error()));
     ctx.response_msg(std::move(result));
 }
 
@@ -262,14 +268,24 @@ void WrappedCentralizedMasterService::BatchPutStart(
     // attachment (set client-side by invoke_batch_rpc via
     // send_request_with_attachment), delegate to the value-returning
     // BatchPutStartInternal, and reply via ctx.response_msg.
+    RequestContext req_ctx;
     if (auto att = ctx.get_context_info()->release_request_attachment();
         !att.empty()) {
-        auto req_ctx = deserialize_request_context(att);
+        req_ctx = deserialize_request_context(att);
         VLOG(1) << "BatchPutStart request_id=" << req_ctx.request_id
                 << " trace_id=" << req_ctx.trace_id;
     }
+    // OpenTelemetry: hop-B SERVER span, child of the propagated trace context
+    // (the real_client hop-A span). No-op when tracing is disabled.
+    ScopedSpan hop_b_span("mooncake-master", "master.batch_put_start", &req_ctx);
 
     auto result = BatchPutStartInternal(client_id, keys, slice_lengths, config);
+    for (const auto& r : result) {
+        if (!r.has_value()) {
+            hop_b_span.SetError(toString(r.error()));
+            break;
+        }
+    }
     ctx.response_msg(std::move(result));
 }
 

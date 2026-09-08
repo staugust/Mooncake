@@ -1,5 +1,6 @@
 #include "rpc_service.h"
 #include "request_context.h"
+#include "tracing.h"
 #include <csignal>
 
 #include <ylt/struct_json/json_reader.h>
@@ -218,14 +219,19 @@ void WrappedMasterService::ExistKey(
     // send_request_with_attachment). Log it here, then delegate to the
     // value-returning ExistKeyInternal (also used in-process by tests) and
     // reply via ctx.response_msg.
+    RequestContext req_ctx;
     if (auto att = ctx.get_context_info()->release_request_attachment();
         !att.empty()) {
-        auto req_ctx = deserialize_request_context(att);
+        req_ctx = deserialize_request_context(att);
         VLOG(1) << "ExistKey request_id=" << req_ctx.request_id
                 << " trace_id=" << req_ctx.trace_id;
     }
+    // OpenTelemetry: hop-B SERVER span, child of the propagated trace context
+    // (the real_client hop-A span). No-op when tracing is disabled.
+    ScopedSpan hop_b_span("mooncake-master", "master.exist_key", &req_ctx);
 
     auto result = ExistKeyInternal(key);
+    if (!result.has_value()) hop_b_span.SetError(toString(result.error()));
     ctx.response_msg(std::move(result));
 }
 
@@ -395,14 +401,19 @@ void WrappedMasterService::Remove(
     // Bypass: see ExistKey. Log the per-request request_id from the attachment,
     // delegate to RemoveInternal (shared with in-process tests), reply via
     // ctx.response_msg.
+    RequestContext req_ctx;
     if (auto att = ctx.get_context_info()->release_request_attachment();
         !att.empty()) {
-        auto req_ctx = deserialize_request_context(att);
+        req_ctx = deserialize_request_context(att);
         VLOG(1) << "Remove request_id=" << req_ctx.request_id
                 << " trace_id=" << req_ctx.trace_id;
     }
+    // OpenTelemetry: hop-B SERVER span, child of the propagated trace context
+    // (the real_client hop-A span). No-op when tracing is disabled.
+    ScopedSpan hop_b_span("mooncake-master", "master.remove", &req_ctx);
 
     auto result = RemoveInternal(key, force);
+    if (!result.has_value()) hop_b_span.SetError(toString(result.error()));
     ctx.response_msg(std::move(result));
 }
 
@@ -527,14 +538,19 @@ void WrappedMasterService::GetReplicaList(
     // delegates the read/log/metric logic to the value-returning
     // GetReplicaListInternal (also used in-process by HTTP /batch_query_keys
     // and tests), then replies via ctx.response_msg.
+    RequestContext req_ctx;
     if (auto att = ctx.get_context_info()->release_request_attachment();
         !att.empty()) {
-        auto req_ctx = deserialize_request_context(att);
+        req_ctx = deserialize_request_context(att);
         VLOG(1) << "GetReplicaList request_id=" << req_ctx.request_id
                 << " trace_id=" << req_ctx.trace_id;
     }
+    // OpenTelemetry: hop-B SERVER span, child of the propagated trace context
+    // (the real_client hop-A span). No-op when tracing is disabled.
+    ScopedSpan hop_b_span("mooncake-master", "master.get_replica_list", &req_ctx);
 
     auto result = GetReplicaListInternal(key, config);
+    if (!result.has_value()) hop_b_span.SetError(toString(result.error()));
     ctx.response_msg(std::move(result));
 }
 
@@ -547,14 +563,24 @@ void WrappedMasterService::BatchGetReplicaList(
     // See GetReplicaList: log the out-of-band attachment request_id, then
     // delegate to the shared value-returning BatchGetReplicaListInternal (one
     // source of read/log/metric logic) and reply via ctx.response_msg.
+    RequestContext req_ctx;
     if (auto att = ctx.get_context_info()->release_request_attachment();
         !att.empty()) {
-        auto req_ctx = deserialize_request_context(att);
+        req_ctx = deserialize_request_context(att);
         VLOG(1) << "BatchGetReplicaList request_id=" << req_ctx.request_id
                 << " trace_id=" << req_ctx.trace_id;
     }
+    // OpenTelemetry: hop-B SERVER span, child of the propagated trace context
+    // (the real_client hop-A span). No-op when tracing is disabled.
+    ScopedSpan hop_b_span("mooncake-master", "master.batch_get_replica_list", &req_ctx);
 
     auto results = BatchGetReplicaListInternal(keys, config);
+    for (const auto& r : results) {
+        if (!r.has_value()) {
+            hop_b_span.SetError(toString(r.error()));
+            break;
+        }
+    }
     ctx.response_msg(std::move(results));
 }
 
@@ -565,14 +591,24 @@ void WrappedMasterService::BatchExistKey(
     // client-side by invoke_batch_rpc (send_request_with_attachment). Log it
     // here, then delegate to the value-returning BatchExistKeyInternal (shared
     // with in-process/tests) and reply via ctx.response_msg.
+    RequestContext req_ctx;
     if (auto att = ctx.get_context_info()->release_request_attachment();
         !att.empty()) {
-        auto req_ctx = deserialize_request_context(att);
+        req_ctx = deserialize_request_context(att);
         VLOG(1) << "BatchExistKey request_id=" << req_ctx.request_id
                 << " trace_id=" << req_ctx.trace_id;
     }
+    // OpenTelemetry: hop-B SERVER span, child of the propagated trace context
+    // (the real_client hop-A span). No-op when tracing is disabled.
+    ScopedSpan hop_b_span("mooncake-master", "master.batch_exist_key", &req_ctx);
 
     auto result = BatchExistKeyInternal(keys);
+    for (const auto& r : result) {
+        if (!r.has_value()) {
+            hop_b_span.SetError(toString(r.error()));
+            break;
+        }
+    }
     ctx.response_msg(std::move(result));
 }
 

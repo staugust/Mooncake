@@ -38,6 +38,7 @@ set(MOONCAKE_STORE_SOURCES
     http_metadata_server.cpp
     file_storage.cpp
     task_manager.cpp
+    tracing.cpp
 )
 
 set(EXTRA_LIBS "")
@@ -119,6 +120,21 @@ target_link_libraries(mooncake_store
     PRIVATE
         transfer_engine
 )
+
+# OpenTelemetry tracing (OTLP/HTTP via Mooncake's coro_http transport).
+# Links the pre-built, installed opentelemetry-cpp imported targets (found in
+# the top-level CMakeLists.txt, produced by install_otel.sh). They fold in
+# statically, adding no new runtime shared dependencies to the binaries.
+if(MOONCAKE_ENABLE_OTEL_TRACING)
+    target_compile_definitions(mooncake_store PUBLIC MOONCAKE_ENABLE_OTEL_TRACING)
+    target_link_libraries(mooncake_store PUBLIC
+        opentelemetry-cpp::trace
+        opentelemetry-cpp::resources
+        opentelemetry-cpp::otlp_recordable
+        opentelemetry-cpp::otlp_http_exporter
+        opentelemetry-cpp::otlp_http_client
+    )
+endif()
 
 # P2P architecture library (P2P split, Phase 1). Transitional state: it still
 # links the whole mooncake_store because base-class inheritance is severed only
