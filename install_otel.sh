@@ -87,7 +87,7 @@ echo "Configuring opentelemetry-cpp..."
 # installed opentelemetry-cpp must NOT link libcurl -- otherwise
 # mooncake_master/mooncake_client would gain a new runtime shared dep.
 # Only the OTLP/HTTP exporter (no gRPC) is needed by Mooncake.
-cmake .. -DWITH_OTLP_HTTP=ON -DWITH_OTLP_GRPC=OFF -DWITH_HTTP_CLIENT_CURL=OFF
+cmake .. -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DWITH_OTLP_HTTP=ON -DWITH_OTLP_GRPC=ON -DWITH_HTTP_CLIENT_CURL=OFF
 check_success "Failed to configure opentelemetry-cpp"
 
 echo "Building opentelemetry-cpp (using $(nproc) cores)..."

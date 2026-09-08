@@ -33,6 +33,7 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/extern/pybind11)
 # mooncake_client free of any new runtime shared-library dependency. When tracing
 # is disabled, no opentelemetry-cpp dependency is pulled in at all.
 if(MOONCAKE_ENABLE_OTEL_TRACING)
+  find_package(utf8_range CONFIG REQUIRED)
   find_package(opentelemetry-cpp CONFIG REQUIRED)
 endif()
 set(PYTHON_EXECUTABLE "python3")

@@ -25,6 +25,9 @@
 #include "request_context.h"
 
 #ifdef MOONCAKE_ENABLE_OTEL_TRACING
+#ifdef __linux__
+#include <csignal>
+#endif
 #include <ylt/coro_http/coro_http_client.hpp>
 
 #include "opentelemetry/exporters/otlp/otlp_http.h"
