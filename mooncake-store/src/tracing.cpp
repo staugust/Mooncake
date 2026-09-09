@@ -103,22 +103,44 @@ std::string SpanIdHex(const trace_api::SpanId& id) {
 }
 
 // Build a (possibly invalid) remote SpanContext from a propagated
-// RequestContext. `parent_span_id_out` receives the incoming parent span id
-// (ctx->span_id) so the new span can record it as its own parent_span_id.
+// RequestContext. `parent_span_id_out` receives the parent span id the new span
+// should record: the caller's span_id, or a value synthesized from the request
+// id when only a request_id was supplied (see below).
 trace_api::SpanContext MakeRemoteSpanContext(const RequestContext* ctx,
                                              std::string& parent_span_id_out) {
     parent_span_id_out.clear();
     if (ctx == nullptr) return trace_api::SpanContext::GetInvalid();
-    parent_span_id_out = ctx->span_id;
-    auto tid = HexToBytes<trace_api::TraceId::kSize>(ctx->trace_id);
-    auto sid = HexToBytes<trace_api::SpanId::kSize>(ctx->span_id);
-    if (!tid || !sid) return trace_api::SpanContext::GetInvalid();
+
+    // Resolve the trace id. Prefer the caller's; otherwise (the common case
+    // where only a request_id was supplied) derive it from the request id so
+    // the whole chain shares a trace id correlated with the request. The
+    // context is normally already self-seeded by deserialize_request_context;
+    // deriving again here is deterministic and idempotent, so both paths agree.
+    std::string trace_id_hex = ctx->trace_id;
+    if (trace_id_hex.empty() && !ctx->request_id.empty())
+        trace_id_hex = DeriveTraceIdFromRequestId(ctx->request_id);
+    auto tid = HexToBytes<trace_api::TraceId::kSize>(trace_id_hex);
+    if (!tid) return trace_api::SpanContext::GetInvalid();  // no trace -> root
+
+    // Resolve the parent span id. Prefer the caller's; when the caller
+    // supplied only a request_id there is no real upstream span, so synthesize
+    // a stable span id from the request id. This keeps the remote SpanContext
+    // valid so the started span *inherits the (request-id-derived) trace id*
+    // instead of becoming a random root, and yields a non-empty parent_span_id
+    // that the hop-A bridge forwards to the next hop.
+    std::string span_id_hex = ctx->span_id;
+    if (span_id_hex.empty() && !ctx->request_id.empty())
+        span_id_hex = DeriveSpanIdFromRequestId(ctx->request_id);
+    auto sid = HexToBytes<trace_api::SpanId::kSize>(span_id_hex);
+    if (!sid) return trace_api::SpanContext::GetInvalid();
+
     trace_api::TraceId trace_id(
         nostd::span<const std::uint8_t, trace_api::TraceId::kSize>(tid->data(),
                                                                    trace_api::TraceId::kSize));
     trace_api::SpanId span_id(
         nostd::span<const std::uint8_t, trace_api::SpanId::kSize>(sid->data(),
                                                                   trace_api::SpanId::kSize));
+    parent_span_id_out = SpanIdHex(span_id);
     return trace_api::SpanContext(
         trace_id, span_id,
         trace_api::TraceFlags(trace_api::TraceFlags::kIsSampled),

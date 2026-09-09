@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -71,14 +73,113 @@ inline std::string current_request_context_attachment() {
     return {};
 }
 
+// ---------------------------------------------------------------------------
+// Trace id / span id derivation from a request id (header-only, no OTel dep).
+//
+// When an upstream caller supplies only a `request_id` but no trace context
+// (the common case for UUID-tagged requests), the chain can still form a
+// coherent trace by *using the request id as the trace id*. For a UUID request
+// id the hyphens are simply stripped so the literal request id becomes the
+// 32-hex trace id; for any other request id a deterministic FNV-1a hash is used
+// so every hop seeds the same value. Pure, no OpenTelemetry dependency, and
+// used both with tracing enabled (to seed the span's trace id) and disabled
+// (to keep logs correlatable across hops).
+// ---------------------------------------------------------------------------
+inline char RequestContextLowHexChar(char c) {
+    if (c >= 'A' && c <= 'F') return static_cast<char>(c - 'A' + 'a');
+    return c;
+}
+inline bool RequestContextIsLowerHexChar(char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+}
+inline std::uint64_t RequestContextFnv1a64(std::string_view s, std::uint64_t seed) {
+    std::uint64_t h = seed;
+    for (unsigned char c : s) {
+        h ^= static_cast<std::uint64_t>(c);
+        h *= 0x100000001b3ULL;
+    }
+    return h;
+}
+inline std::string RequestContextBytesToHex(const unsigned char* data, std::size_t n) {
+    static const char* kHex = "0123456789abcdef";
+    std::string out;
+    out.resize(n * 2);
+    for (std::size_t i = 0; i < n; ++i) {
+        out[2 * i] = kHex[(data[i] >> 4) & 0xf];
+        out[2 * i + 1] = kHex[data[i] & 0xf];
+    }
+    return out;
+}
+
+// Derive a 32-hex trace id (16 bytes) from a request id. A hyphenated id that
+// reduces to exactly 32 hex chars (a UUID, e.g. uuid4 minus its hyphens) is
+// used verbatim so the trace id *is* the request id. Otherwise the request id
+// is hashed deterministically; an all-zero id (invalid in OTel) is nudged.
+inline std::string DeriveTraceIdFromRequestId(std::string_view request_id) {
+    if (request_id.empty()) return {};
+    std::string hex;
+    hex.reserve(request_id.size());
+    for (char c : request_id) {
+        if (c == '-') continue;
+        hex.push_back(RequestContextLowHexChar(c));
+    }
+    if (hex.size() == 32) {
+        bool ok = true;
+        for (char c : hex) {
+            if (!RequestContextIsLowerHexChar(c)) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) return hex;  // request id *is* the trace id (UUID case)
+    }
+    unsigned char bytes[16];
+    std::uint64_t lo = RequestContextFnv1a64(request_id, 0xcbf29ce484222325ULL);
+    std::uint64_t hi = RequestContextFnv1a64(request_id, 0x6c62272e07bb0142ULL);
+    if (lo == 0 && hi == 0) lo = 1;  // all-zero TraceId is invalid
+    for (int i = 0; i < 8; ++i) {
+        bytes[i] = static_cast<unsigned char>(hi >> (56 - 8 * i));
+        bytes[8 + i] = static_cast<unsigned char>(lo >> (56 - 8 * i));
+    }
+    return RequestContextBytesToHex(bytes, 16);
+}
+
+// Derive a 16-hex span id (8 bytes) from a request id using a distinct seed so
+// it differs from the trace id halves. Used to synthesize a valid parent span
+// id when the caller supplied only a request id (no real upstream span).
+inline std::string DeriveSpanIdFromRequestId(std::string_view request_id) {
+    if (request_id.empty()) return {};
+    std::uint64_t h = RequestContextFnv1a64(request_id, 0x9dc5d7e9c4b2f1a3ULL);
+    if (h == 0) h = 1;  // all-zero SpanId is invalid
+    unsigned char bytes[8];
+    for (int i = 0; i < 8; ++i)
+        bytes[i] = static_cast<unsigned char>(h >> (56 - 8 * i));
+    return RequestContextBytesToHex(bytes, 8);
+}
+
+// When the upstream supplied only a request_id (no trace_id), use the request
+// id as the trace id so the chain stays coherent even without an explicit
+// trace context / OTel export. No-op when a trace id is already present.
+inline void EnsureRequestIdAsTraceId(RequestContext& ctx) {
+    if (!ctx.trace_id.empty() || ctx.request_id.empty()) return;
+    ctx.trace_id = DeriveTraceIdFromRequestId(ctx.request_id);
+}
+
 // Deserialize a RequestContext from wire bytes (received via
-// release_request_attachment). Returns an empty RequestContext when
-// data is empty or deserialization fails.
+// release_request_attachment). Returns an empty RequestContext when data is
+// empty or deserialization fails.
 inline RequestContext deserialize_request_context(std::string_view data) {
     RequestContext ctx;
     if (!data.empty()) {
         struct_pack::deserialize_to(ctx, data.data(), data.size());
     }
+    // Self-seed the distributed trace id from the application request id when
+    // the upstream caller provided only a request_id. This keeps the chain
+    // coherent (and observable in logs) even when no explicit trace context /
+    // OpenTelemetry export is configured. Idempotent: a context that already
+    // carries a trace id (set by a previous hop) is left untouched, and the
+    // derivation is deterministic, so every hop sees the same value.
+    EnsureRequestIdAsTraceId(ctx);
     return ctx;
 }
 
