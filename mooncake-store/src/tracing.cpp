@@ -153,36 +153,33 @@ trace_api::SpanContext MakeRemoteSpanContext(const RequestContext* ctx,
 std::atomic<bool> g_tracing_enabled{false};
 std::shared_ptr<trace_sdk::TracerProvider> g_provider;
 
+// The endpoint carries NO scheme: the transport (OTLP/HTTP vs OTLP/gRPC) is
+// chosen by --otlp-traces-protocol, so the operator writes a bare "host:port"
+// (gRPC) or "host:port/path" (HTTP, path optional). A leftover "scheme://"
+// prefix from an older config is tolerated by stripping it. (TLS is no longer
+// signalled via the endpoint; plaintext is the default -- terminate TLS at the
+// collector side, or add a dedicated flag if a TLS client path is needed.)
 std::string NormalizeTracesEndpoint(const std::string& endpoint) {
     std::string url = endpoint;
     while (url.size() > 1 && url.back() == '/') url.pop_back();
     const auto scheme_end = url.find("://");
-    const std::size_t host_start = (scheme_end == std::string::npos) ? 0 : scheme_end + 3;
+    if (scheme_end != std::string::npos) url = url.substr(scheme_end + 3);
     // No path present -> append the standard OTLP/HTTP traces path.
-    if (url.find('/', host_start) == std::string::npos) url += "/v1/traces";
-    return url;
+    if (url.find('/') == std::string::npos) url += "/v1/traces";
+    return "http://" + url;  // exporter needs a complete URL
 }
 
-// The OTLP/gRPC exporter expects a bare "host:port" (it appends the
-// /opentelemetry.proto.collector.trace.v1.TraceService method itself), so
-// strip any scheme/path from a URL the operator may have written. An https://
-// scheme additionally requests TLS; http:// or no scheme stays plaintext.
-std::string NormalizeGrpcEndpoint(const std::string& endpoint, bool& use_ssl_out) {
-    use_ssl_out = false;
+// The OTLP/gRPC exporter wants bare "host:port" (it appends the
+// /opentelemetry.proto.collector.trace.v1.TraceService method itself), so drop
+// any scheme/path.
+std::string NormalizeGrpcEndpoint(const std::string& endpoint) {
     std::string e = endpoint;
     while (e.size() > 1 && e.back() == '/') e.pop_back();
     const auto scheme_end = e.find("://");
-    std::size_t host_start = 0;
-    if (scheme_end != std::string::npos) {
-        std::string scheme = e.substr(0, scheme_end);
-        for (auto& c : scheme) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        use_ssl_out = (scheme == "https");
-        host_start = scheme_end + 3;
-    }
-    std::string rest = e.substr(host_start);
-    const auto slash = rest.find('/');
-    if (slash != std::string::npos) rest = rest.substr(0, slash);
-    return rest;  // "host:port"
+    if (scheme_end != std::string::npos) e = e.substr(scheme_end + 3);
+    const auto slash = e.find('/');
+    if (slash != std::string::npos) e = e.substr(0, slash);
+    return e;  // "host:port"
 }
 
 }  // namespace
@@ -270,9 +267,7 @@ bool InitTracing(const std::string& otlp_endpoint, std::string service_name,
     std::unique_ptr<trace_sdk::SpanExporter> exporter;
     if (proto == "grpc") {
         otlp::OtlpGrpcExporterOptions opts{};
-        bool use_ssl = false;
-        opts.endpoint = NormalizeGrpcEndpoint(otlp_endpoint, use_ssl);
-        opts.use_ssl = use_ssl;
+        opts.endpoint = NormalizeGrpcEndpoint(otlp_endpoint);
         opts.timeout = std::chrono::seconds(30);
         exporter = otlp::OtlpGrpcExporterFactory::Create(opts);
     } else {

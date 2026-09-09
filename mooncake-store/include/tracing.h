@@ -77,13 +77,13 @@ class ScopedSpan {
 };
 
 // Initialize the global tracer provider. `otlp_endpoint` selects the OTLP
-// traces collector. `protocol` chooses the transport: "http" (default, OTLP/HTTP
-// -- the endpoint is normalized to http(s)://host:port/v1/traces) or "grpc"
-// (OTLP/gRPC -- the endpoint is reduced to host:port; an https:// scheme also
-// enables TLS). Anything other than "grpc" falls back to OTLP/HTTP. An empty
-// endpoint disables tracing (no provider installed, ScopedSpan becomes no-op).
-// Returns true if tracing was enabled. Headers/libs for both exporters are built
-// by install_otel.sh (WITH_OTLP_HTTP=ON, WITH_OTLP_GRPC=ON).
+// traces collector, given WITHOUT a scheme: "host:port" (for gRPC) or
+// "host:port/path" (for HTTP; /v1/traces is appended when only host:port is
+// given). `protocol` chooses the transport: "http" (default, OTLP/HTTP) or
+// "grpc" (OTLP/gRPC); anything other than "grpc" falls back to OTLP/HTTP. An
+// empty endpoint disables tracing (no provider installed, ScopedSpan becomes
+// no-op). Returns true if tracing was enabled. Headers/libs for both exporters
+// are built by install_otel.sh (WITH_OTLP_HTTP=ON, WITH_OTLP_GRPC=ON).
 bool InitTracing(const std::string& otlp_endpoint,
                  std::string service_name,
                  const std::string& protocol = "http");
