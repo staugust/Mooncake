@@ -108,29 +108,43 @@ std::string SpanIdHex(const trace_api::SpanId& id) {
     return std::string(buf, trace_api::SpanId::kSize * 2);
 }
 
-// Build a (possibly invalid) remote SpanContext describing the parent the new
-// span should link to. `parent_span_id_out` receives that parent's span id
-// (cleared when there is no parent, i.e. this span is a root).
+// Build a remote SpanContext describing the parent the new span links to, so
+// the started span inherits that parent's trace id. `parent_span_id_out`
+// receives that parent's span id (cleared only when there is genuinely no
+// parent and no request_id to synthesize one from, i.e. a true root).
+//
+// The dummy->real entry propagates ONLY a request_id (no span_id). To make the
+// whole chain share ONE trace id tied to the request -- same request_id yields
+// the same trace_id across hops and across requests -- we cannot let hop-a be
+// a true root: OTel assigns a fresh RANDOM trace id to a root. Instead we
+// synthesize a stable parent (trace id = DeriveTraceIdFromRequestId(request_id),
+// span id = DeriveSpanIdFromRequestId(request_id)); the started span is a child
+// of that un-exported "remote" parent and inherits the request-derived trace
+// id, which PopulateRequestContext then propagates to the next hop.
 trace_api::SpanContext MakeRemoteSpanContext(const RequestContext* ctx,
                                              std::string& parent_span_id_out) {
     parent_span_id_out.clear();
     if (ctx == nullptr) return trace_api::SpanContext::GetInvalid();
 
-    // A propagated span_id is the link to an upstream span. Without one there
-    // is no remote parent, so the started span is the ROOT of its trace:
-    // return an invalid SpanContext so ScopedSpanImpl never sets opts.parent
-    // and the SDK opens a fresh root span (with a new trace id).
-    if (ctx->span_id.empty()) return trace_api::SpanContext::GetInvalid();
-
-    // Upstream parent present: resolve the trace id. Prefer ctx->trace_id (set
-    // by a previous hop's PopulateRequestContext); when it is missing (an
-    // incomplete context) fall back to a request-id-derived id so the parent
-    // still carries a coherent trace id.
+    // Resolve the trace id: prefer the caller's; otherwise derive it from the
+    // request id so the chain shares a request-correlated trace id.
+    // deserialize_request_context normally already self-seeds ctx->trace_id;
+    // deriving again here is deterministic & idempotent, so both paths agree.
     std::string trace_id_hex = ctx->trace_id;
     if (trace_id_hex.empty() && !ctx->request_id.empty())
         trace_id_hex = DeriveTraceIdFromRequestId(ctx->request_id);
     auto tid = HexToBytes<trace_api::TraceId::kSize>(trace_id_hex);
-    auto sid = HexToBytes<trace_api::SpanId::kSize>(ctx->span_id);
+
+    // Resolve the parent span id: prefer the caller's; otherwise synthesize
+    // one from the request id. Keeping the parent SpanContext valid is what
+    // lets the started span inherit the (request-derived) trace id instead of
+    // becoming a random root.
+    std::string span_id_hex = ctx->span_id;
+    if (span_id_hex.empty() && !ctx->request_id.empty())
+        span_id_hex = DeriveSpanIdFromRequestId(ctx->request_id);
+    auto sid = HexToBytes<trace_api::SpanId::kSize>(span_id_hex);
+
+    // No request_id and no real upstream span => genuine root (SDK random trace).
     if (!tid || !sid) return trace_api::SpanContext::GetInvalid();
 
     trace_api::TraceId trace_id(

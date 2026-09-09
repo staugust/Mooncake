@@ -144,6 +144,21 @@ inline std::string DeriveTraceIdFromRequestId(std::string_view request_id) {
     return RequestContextBytesToHex(bytes, 16);
 }
 
+// Derive a 16-hex span id (8 bytes) from a request id, using a distinct seed so
+// it differs from the trace id halves. Used to synthesize a stable parent span
+// id when the caller supplied only a request id (no real upstream span), so the
+// started span can inherit the request-derived trace id (see
+// MakeRemoteSpanContext).
+inline std::string DeriveSpanIdFromRequestId(std::string_view request_id) {
+    if (request_id.empty()) return {};
+    std::uint64_t h = RequestContextFnv1a64(request_id, 0x9dc5d7e9c4b2f1a3ULL);
+    if (h == 0) h = 1;  // all-zero SpanId is invalid
+    unsigned char bytes[8];
+    for (int i = 0; i < 8; ++i)
+        bytes[i] = static_cast<unsigned char>(h >> (56 - 8 * i));
+    return RequestContextBytesToHex(bytes, 8);
+}
+
 // When the upstream supplied only a request_id (no trace_id), use the request
 // id as the trace id so the chain stays coherent even without an explicit
 // trace context / OTel export. No-op when a trace id is already present.
