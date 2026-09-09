@@ -82,12 +82,12 @@ cd build
 check_success "Failed to change to build directory"
 
 echo "Configuring opentelemetry-cpp..."
-# WITH_HTTP_CLIENT_CURL=OFF: Mooncake injects its own coro_http-based
-# HttpClient at runtime (see mooncake-store/src/tracing.cpp), so the
-# installed opentelemetry-cpp must NOT link libcurl -- otherwise
-# mooncake_master/mooncake_client would gain a new runtime shared dep.
-# Only the OTLP/HTTP exporter (no gRPC) is needed by Mooncake.
-cmake .. -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DWITH_OTLP_HTTP=ON -DWITH_OTLP_GRPC=ON -DWITH_HTTP_CLIENT_CURL=OFF
+# WITH_HTTP_CLIENT_CURL=ON: builds the curl-based HttpClient that the
+# OTLP/HTTP exporter ships spans with. Mooncake uses the stock
+# opentelemetry-cpp HTTP transport (libcurl) rather than a custom one,
+# so libcurl becomes a runtime shared dep of mooncake_master/client.
+# The OTLP/HTTP and OTLP/gRPC exporters are both enabled for Mooncake.
+cmake .. -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DWITH_OTLP_HTTP=ON -DWITH_OTLP_GRPC=ON -DWITH_HTTP_CLIENT_CURL=ON
 check_success "Failed to configure opentelemetry-cpp"
 
 echo "Building opentelemetry-cpp (using $(nproc) cores)..."

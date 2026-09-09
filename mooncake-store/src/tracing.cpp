@@ -3,9 +3,9 @@
 // OpenTelemetry tracing integration for mooncake store binaries.
 //
 // When MOONCAKE_ENABLE_OTEL_TRACING is defined the spans are exported over
-// OTLP/HTTP to the collector given via --otlp-traces-endpoint. The OTLP/HTTP
-// transport is Mooncake's own coro_http implementation injected as a custom
-// opentelemetry::ext::http::client::HttpClient, so libcurl is never pulled in.
+// OTLP/HTTP to the collector given via --otlp-traces-endpoint, using the
+// stock curl-based HttpClient shipped with opentelemetry-cpp (built with
+// WITH_HTTP_CLIENT_CURL=ON, see install_otel.sh).
 // When the macro is undefined everything compiles to no-op stubs.
 
 #include "tracing.h"
@@ -25,11 +25,7 @@
 #include "request_context.h"
 
 #ifdef MOONCAKE_ENABLE_OTEL_TRACING
-#ifdef __linux__
-#include <csignal>
-#endif
-#include <ylt/coro_http/coro_http_client.hpp>
-
+#include "opentelemetry/ext/http/client/http_client_factory.h"
 #include "opentelemetry/exporters/otlp/otlp_http.h"
 #include "opentelemetry/exporters/otlp/otlp_http_exporter_factory.h"
 #include "opentelemetry/exporters/otlp/otlp_http_exporter_options.h"
@@ -130,140 +126,6 @@ trace_api::SpanContext MakeRemoteSpanContext(const RequestContext* ctx,
 }
 
 // ---------------------------------------------------------------------------
-// Custom OTLP/HTTP transport backed by Mooncake's coro_http.
-//
-// The OTLP exporter talks to an opentelemetry::ext::http::client::HttpClient.
-// We implement that interface with coro_http_client so the exporter has zero
-// dependency on libcurl. Only the synchronous POST path used by OtlpHttpClient
-// is implemented; createSession -> createRequest -> (configure) -> sendRequest.
-// ---------------------------------------------------------------------------
-
-class CoroHttpRequest : public http_client::Request {
-   public:
-    void SetMethod(http_client::Method method) noexcept override { method_ = method; }
-    void SetUri(nostd::string_view uri) noexcept override { uri_ = std::string(uri); }
-    void SetSslOptions(const http_client::HttpSslOptions& options) noexcept override {
-        ssl_options_ = options;
-    }
-    void SetBody(http_client::Body& body) noexcept override { body_ = body; }
-    void AddHeader(nostd::string_view name, nostd::string_view value) noexcept override {
-        headers_.emplace(std::string(name), std::string(value));
-    }
-    void ReplaceHeader(nostd::string_view name, nostd::string_view value) noexcept override {
-        std::string k(name);
-        headers_.erase(k);
-        headers_.emplace(std::move(k), std::string(value));
-    }
-    void SetTimeoutMs(std::chrono::milliseconds timeout_ms) noexcept override {
-        timeout_ms_ = timeout_ms;
-    }
-    void SetCompression(const http_client::Compression&) noexcept override {}
-    void EnableLogging(bool) noexcept override {}
-    void SetRetryPolicy(const http_client::RetryPolicy&) noexcept override {}
-
-    ~CoroHttpRequest() override = default;
-
-    http_client::Method method_ = http_client::Method::Post;
-    std::string uri_;
-    http_client::HttpSslOptions ssl_options_;
-    http_client::Body body_;
-    http_client::Headers headers_;
-    std::chrono::milliseconds timeout_ms_{10000};
-};
-
-class CoroHttpResponse : public http_client::Response {
-   public:
-    const http_client::Body& GetBody() const noexcept override { return body_; }
-    void SetBody(std::string_view b) { body_.assign(b.begin(), b.end()); }
-    void SetStatusCode(http_client::StatusCode s) { status_code_ = s; }
-    bool ForEachHeader(
-        nostd::function_ref<bool(nostd::string_view, nostd::string_view)> /*callable*/)
-        const noexcept override {
-        return true;
-    }
-    bool ForEachHeader(
-        const nostd::string_view& /*key*/,
-        nostd::function_ref<bool(nostd::string_view, nostd::string_view)> /*callable*/)
-        const noexcept override {
-        return true;
-    }
-    http_client::StatusCode GetStatusCode() const noexcept override { return status_code_; }
-
-   private:
-    http_client::Body body_;
-    http_client::StatusCode status_code_ = 0;
-};
-
-class CoroHttpSession : public http_client::Session {
-   public:
-    explicit CoroHttpSession(std::string url) : url_(std::move(url)) {}
-
-    std::shared_ptr<http_client::Request> CreateRequest() noexcept override {
-        request_ = std::make_shared<CoroHttpRequest>();
-        return request_;
-    }
-
-    void SendRequest(std::shared_ptr<http_client::EventHandler> handle) noexcept override {
-        active_ = true;
-        auto req = std::static_pointer_cast<CoroHttpRequest>(request_);
-        if (!req || !handle) {
-            active_ = false;
-            handle->OnEvent(http_client::SessionState::CreateFailed, "no request");
-            return;
-        }
-
-        // Build a coro_http headers map from the OTel multimap.
-        std::unordered_map<std::string, std::string> headers;
-        for (const auto& [k, v] : req->headers_) headers.emplace(k, v);
-
-        const std::string content(reinterpret_cast<const char*>(req->body_.data()),
-                                  req->body_.size());
-
-        coro_http::coro_http_client client;
-        coro_http::resp_data rd;
-        try {
-            rd = client.post(url_, content, coro_http::req_content_type::none, headers);
-        } catch (const std::exception& e) {
-            active_ = false;
-            handle->OnEvent(http_client::SessionState::NetworkError, e.what());
-            return;
-        }
-
-        active_ = false;
-        if (rd.net_err) {
-            handle->OnEvent(http_client::SessionState::NetworkError, rd.net_err.message());
-            return;
-        }
-        auto response = std::make_unique<CoroHttpResponse>();
-        response->SetStatusCode(static_cast<http_client::StatusCode>(rd.status));
-        response->SetBody(rd.resp_body);
-        handle->OnResponse(*response);
-    }
-
-    bool IsSessionActive() noexcept override { return active_; }
-    bool CancelSession() noexcept override { return false; }
-    bool FinishSession() noexcept override { return true; }
-
-    ~CoroHttpSession() override = default;
-
-   private:
-    std::string url_;
-    std::shared_ptr<http_client::Request> request_;
-    bool active_ = false;
-};
-
-class CoroHttpClient : public http_client::HttpClient {
-   public:
-    std::shared_ptr<http_client::Session> CreateSession(nostd::string_view url) noexcept override {
-        return std::make_shared<CoroHttpSession>(std::string(url));
-    }
-    bool CancelAllSessions() noexcept override { return true; }
-    bool FinishAllSessions() noexcept override { return true; }
-    void SetMaxSessionsPerConnection(std::size_t) noexcept override {}
-    ~CoroHttpClient() override = default;
-};
-
-// ---------------------------------------------------------------------------
 // Global tracing state
 // ---------------------------------------------------------------------------
 
@@ -359,8 +221,7 @@ bool InitTracing(const std::string& otlp_http_endpoint, std::string service_name
     opts.content_type = otlp::HttpRequestContentType::kBinary;
     opts.timeout = std::chrono::seconds(30);
 
-    auto http_client_ptr = std::make_shared<CoroHttpClient>();
-    auto exporter = otlp::OtlpHttpExporterFactory::Create(opts, http_client_ptr);
+    auto exporter = otlp::OtlpHttpExporterFactory::Create(opts);
 
     trace_sdk::BatchSpanProcessorOptions bsp_opts{};
     bsp_opts.max_queue_size = 2048;
