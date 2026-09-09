@@ -2,16 +2,19 @@
 //
 // OpenTelemetry tracing integration for mooncake store binaries.
 //
-// When MOONCAKE_ENABLE_OTEL_TRACING is defined the spans are exported over
-// OTLP/HTTP to the collector given via --otlp-traces-endpoint, using the
-// stock curl-based HttpClient shipped with opentelemetry-cpp (built with
-// WITH_HTTP_CLIENT_CURL=ON, see install_otel.sh).
-// When the macro is undefined everything compiles to no-op stubs.
+// When MOONCAKE_ENABLE_OTEL_TRACING is defined the spans are exported to the
+// OTLP collector given via --otlp-traces-endpoint over either OTLP/HTTP (the
+// default, using opentelemetry-cpp's built-in curl client, built with
+// WITH_HTTP_CLIENT_CURL=ON) or OTLP/gRPC (selected via --otlp-traces-protocol
+// grpc, built with WITH_OTLP_GRPC=ON). Both exporters are installed by
+// install_otel.sh. When the macro is undefined everything compiles to no-op
+// stubs.
 
 #include "tracing.h"
 
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <cstdint>
@@ -29,6 +32,9 @@
 #include "opentelemetry/exporters/otlp/otlp_http.h"
 #include "opentelemetry/exporters/otlp/otlp_http_exporter_factory.h"
 #include "opentelemetry/exporters/otlp/otlp_http_exporter_options.h"
+#include "opentelemetry/exporters/otlp/otlp_grpc_exporter.h"
+#include "opentelemetry/exporters/otlp/otlp_grpc_exporter_factory.h"
+#include "opentelemetry/exporters/otlp/otlp_grpc_exporter_options.h"
 #include "opentelemetry/ext/http/client/http_client.h"
 #include "opentelemetry/nostd/shared_ptr.h"
 #include "opentelemetry/nostd/span.h"
@@ -102,37 +108,30 @@ std::string SpanIdHex(const trace_api::SpanId& id) {
     return std::string(buf, trace_api::SpanId::kSize * 2);
 }
 
-// Build a (possibly invalid) remote SpanContext from a propagated
-// RequestContext. `parent_span_id_out` receives the parent span id the new span
-// should record: the caller's span_id, or a value synthesized from the request
-// id when only a request_id was supplied (see below).
+// Build a (possibly invalid) remote SpanContext describing the parent the new
+// span should link to. `parent_span_id_out` receives that parent's span id
+// (cleared when there is no parent, i.e. this span is a root).
 trace_api::SpanContext MakeRemoteSpanContext(const RequestContext* ctx,
                                              std::string& parent_span_id_out) {
     parent_span_id_out.clear();
     if (ctx == nullptr) return trace_api::SpanContext::GetInvalid();
 
-    // Resolve the trace id. Prefer the caller's; otherwise (the common case
-    // where only a request_id was supplied) derive it from the request id so
-    // the whole chain shares a trace id correlated with the request. The
-    // context is normally already self-seeded by deserialize_request_context;
-    // deriving again here is deterministic and idempotent, so both paths agree.
+    // A propagated span_id is the link to an upstream span. Without one there
+    // is no remote parent, so the started span is the ROOT of its trace:
+    // return an invalid SpanContext so ScopedSpanImpl never sets opts.parent
+    // and the SDK opens a fresh root span (with a new trace id).
+    if (ctx->span_id.empty()) return trace_api::SpanContext::GetInvalid();
+
+    // Upstream parent present: resolve the trace id. Prefer ctx->trace_id (set
+    // by a previous hop's PopulateRequestContext); when it is missing (an
+    // incomplete context) fall back to a request-id-derived id so the parent
+    // still carries a coherent trace id.
     std::string trace_id_hex = ctx->trace_id;
     if (trace_id_hex.empty() && !ctx->request_id.empty())
         trace_id_hex = DeriveTraceIdFromRequestId(ctx->request_id);
     auto tid = HexToBytes<trace_api::TraceId::kSize>(trace_id_hex);
-    if (!tid) return trace_api::SpanContext::GetInvalid();  // no trace -> root
-
-    // Resolve the parent span id. Prefer the caller's; when the caller
-    // supplied only a request_id there is no real upstream span, so synthesize
-    // a stable span id from the request id. This keeps the remote SpanContext
-    // valid so the started span *inherits the (request-id-derived) trace id*
-    // instead of becoming a random root, and yields a non-empty parent_span_id
-    // that the hop-A bridge forwards to the next hop.
-    std::string span_id_hex = ctx->span_id;
-    if (span_id_hex.empty() && !ctx->request_id.empty())
-        span_id_hex = DeriveSpanIdFromRequestId(ctx->request_id);
-    auto sid = HexToBytes<trace_api::SpanId::kSize>(span_id_hex);
-    if (!sid) return trace_api::SpanContext::GetInvalid();
+    auto sid = HexToBytes<trace_api::SpanId::kSize>(ctx->span_id);
+    if (!tid || !sid) return trace_api::SpanContext::GetInvalid();
 
     trace_api::TraceId trace_id(
         nostd::span<const std::uint8_t, trace_api::TraceId::kSize>(tid->data(),
@@ -162,6 +161,28 @@ std::string NormalizeTracesEndpoint(const std::string& endpoint) {
     // No path present -> append the standard OTLP/HTTP traces path.
     if (url.find('/', host_start) == std::string::npos) url += "/v1/traces";
     return url;
+}
+
+// The OTLP/gRPC exporter expects a bare "host:port" (it appends the
+// /opentelemetry.proto.collector.trace.v1.TraceService method itself), so
+// strip any scheme/path from a URL the operator may have written. An https://
+// scheme additionally requests TLS; http:// or no scheme stays plaintext.
+std::string NormalizeGrpcEndpoint(const std::string& endpoint, bool& use_ssl_out) {
+    use_ssl_out = false;
+    std::string e = endpoint;
+    while (e.size() > 1 && e.back() == '/') e.pop_back();
+    const auto scheme_end = e.find("://");
+    std::size_t host_start = 0;
+    if (scheme_end != std::string::npos) {
+        std::string scheme = e.substr(0, scheme_end);
+        for (auto& c : scheme) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        use_ssl_out = (scheme == "https");
+        host_start = scheme_end + 3;
+    }
+    std::string rest = e.substr(host_start);
+    const auto slash = rest.find('/');
+    if (slash != std::string::npos) rest = rest.substr(0, slash);
+    return rest;  // "host:port"
 }
 
 }  // namespace
@@ -234,16 +255,33 @@ class ScopedSpanImpl {
     std::string parent_span_hex_;
 };
 
-bool InitTracing(const std::string& otlp_http_endpoint, std::string service_name) {
-    if (otlp_http_endpoint.empty()) return false;
+bool InitTracing(const std::string& otlp_endpoint, std::string service_name,
+                 const std::string& protocol) {
+    if (otlp_endpoint.empty()) return false;
     if (g_tracing_enabled.load()) return true;
 
-    otlp::OtlpHttpExporterOptions opts;
-    opts.url = NormalizeTracesEndpoint(otlp_http_endpoint);
-    opts.content_type = otlp::HttpRequestContentType::kBinary;
-    opts.timeout = std::chrono::seconds(30);
+    // Choose the OTLP transport. Anything other than an explicit "grpc" (case
+    // insensitive) falls back to OTLP/HTTP, so existing deployments that pass
+    // only --otlp-traces-endpoint keep their original HTTP behaviour.
+    std::string proto = protocol;
+    for (auto& c : proto)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
-    auto exporter = otlp::OtlpHttpExporterFactory::Create(opts);
+    std::unique_ptr<trace_sdk::SpanExporter> exporter;
+    if (proto == "grpc") {
+        otlp::OtlpGrpcExporterOptions opts{};
+        bool use_ssl = false;
+        opts.endpoint = NormalizeGrpcEndpoint(otlp_endpoint, use_ssl);
+        opts.use_ssl = use_ssl;
+        opts.timeout = std::chrono::seconds(30);
+        exporter = otlp::OtlpGrpcExporterFactory::Create(opts);
+    } else {
+        otlp::OtlpHttpExporterOptions opts;
+        opts.url = NormalizeTracesEndpoint(otlp_endpoint);
+        opts.content_type = otlp::HttpRequestContentType::kBinary;
+        opts.timeout = std::chrono::seconds(30);
+        exporter = otlp::OtlpHttpExporterFactory::Create(opts);
+    }
 
     trace_sdk::BatchSpanProcessorOptions bsp_opts{};
     bsp_opts.max_queue_size = 2048;
@@ -308,7 +346,8 @@ class ScopedSpanImpl {};
 
 static std::atomic<bool> g_tracing_enabled{false};
 
-bool InitTracing(const std::string& otlp_http_endpoint, std ::string /*service_name*/) {
+bool InitTracing(const std::string& otlp_http_endpoint, std::string /*service_name*/,
+                       const std::string& /*protocol*/) {
     (void)otlp_http_endpoint;
     return false;
 }

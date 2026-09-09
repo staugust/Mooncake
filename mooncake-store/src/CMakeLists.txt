@@ -121,10 +121,12 @@ target_link_libraries(mooncake_store
         transfer_engine
 )
 
-# OpenTelemetry tracing (OTLP/HTTP via Mooncake's coro_http transport).
-# Links the pre-built, installed opentelemetry-cpp imported targets (found in
-# the top-level CMakeLists.txt, produced by install_otel.sh). They fold in
-# statically, adding no new runtime shared dependencies to the binaries.
+# OpenTelemetry tracing: OTLP/HTTP (built-in curl client) and OTLP/gRPC
+# exporters. Links the pre-built, installed opentelemetry-cpp imported targets
+# (found in the top-level CMakeLists.txt, produced by install_otel.sh which
+# builds with WITH_OTLP_HTTP=ON and WITH_OTLP_GRPC=ON). They fold in statically;
+# note the gRPC + abseil pull-in noticeably grows the binaries, so only enable
+# MOONCAKE_ENABLE_OTEL_TRACING when the tracing binaries are actually needed.
 if(MOONCAKE_ENABLE_OTEL_TRACING)
     target_compile_definitions(mooncake_store PUBLIC MOONCAKE_ENABLE_OTEL_TRACING)
     target_link_libraries(mooncake_store PUBLIC
@@ -133,7 +135,13 @@ if(MOONCAKE_ENABLE_OTEL_TRACING)
         opentelemetry-cpp::otlp_recordable
         opentelemetry-cpp::otlp_http_exporter
         opentelemetry-cpp::otlp_http_client
+        opentelemetry-cpp::otlp_grpc_exporter
     )
+    # Optional separate gRPC client target; present only in some
+    # opentelemetry-cpp layouts, so link it only when available.
+    if(TARGET opentelemetry-cpp::otlp_grpc_client)
+        target_link_libraries(mooncake_store PUBLIC opentelemetry-cpp::otlp_grpc_client)
+    endif()
 endif()
 
 # P2P architecture library (P2P split, Phase 1). Transitional state: it still

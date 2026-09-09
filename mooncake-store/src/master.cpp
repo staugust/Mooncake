@@ -173,10 +173,15 @@ DEFINE_int32(
     redis_master_view_ttl_sec, 4,
     "TTL in seconds for the leader key in Redis election (default: 4)");
 DEFINE_string(otlp_traces_endpoint, "",
-              "OTLP/HTTP traces collector endpoint for OpenTelemetry tracing "
-              "(e.g. http://collector:4318/v1/traces). When empty, tracing "
-              "is disabled. Requires building with "
+              "OTLP traces collector endpoint for OpenTelemetry tracing. For "
+              "--otlp_traces_protocol=http (default) use a URL such as "
+              "http://collector:4318/v1/traces (the /v1/traces path is appended "
+              "if omitted); for grpc use host:port (e.g. collector:4317). When "
+              "empty, tracing is disabled. Requires building with "
               "MOONCAKE_ENABLE_OTEL_TRACING=ON; otherwise this flag is a no-op.");
+DEFINE_string(otlp_traces_protocol, "http",
+              "OTLP transport protocol for traces: \"http\" (default) or "
+              "\"grpc\". Ignored when --otlp_traces_endpoint is empty.");
 DEFINE_int32(redis_heartbeat_interval_sec, 1,
              "KeepLeader heartbeat interval in seconds for Redis election "
              "(default: 1, should be < ttl)");
@@ -718,7 +723,8 @@ int main(int argc, char* argv[]) {
     // Initialize gflags
     gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-    mooncake::InitTracing(FLAGS_otlp_traces_endpoint, "mooncake-master");
+    mooncake::InitTracing(FLAGS_otlp_traces_endpoint, "mooncake-master",
+                          FLAGS_otlp_traces_protocol);
 
     if (!FLAGS_log_dir.empty()) {
         google::InitGoogleLogging(argv[0]);
