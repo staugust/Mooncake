@@ -19,12 +19,24 @@ struct RequestContext {
     std::string trace_id;    // distributed trace id
     std::string span_id;
     std::string parent_span_id;
+    // Wire-compatible additions (struct_pack::compatible => optional semantics).
+    // Appended at the end so older binaries lacking them safely ignore the
+    // trailing compatible bytes, and a newer binary receiving old bytes sees
+    // them unset; the type code stays stable (verified by a struct_pack
+    // round-trip test). Distinct increasing version tags (1, 2) fix the wire
+    // order and leave room for future compatible fields (use >=3). See
+    // plan_trace.md §2.8.
+    struct_pack::compatible<std::string, 1> caller_id;   // which dummy-client / TP rank issued the RPC
+    struct_pack::compatible<std::string, 2> caller_role; // caller's thread role, e.g. prefetch / backup
 };
 
-// Enable struct_pack field-name-based serialization. Future fields appended
-// as struct_pack::compatible<std::string> at the end are safely ignored by
-// older binaries that lack the field in their YLT_REFL list.
-YLT_REFL(RequestContext, request_id, trace_id, span_id, parent_span_id);
+// Enable struct_pack field-name-based serialization. Compatible fields appended
+// at the end keep the type code stable: an older binary lacking them ignores
+// the trailing compatible bytes (forward), and a newer binary receiving old
+// bytes sees them unset (backward). Future compatible additions should use
+// increasing version tags (>=3).
+YLT_REFL(RequestContext, request_id, trace_id, span_id, parent_span_id,
+         caller_id, caller_role);
 
 // Per-thread current request context. Set on the calling (Python) thread before
 // a store operation and consumed synchronously by the master-client wrappers on
@@ -165,6 +177,17 @@ inline std::string DeriveSpanIdFromRequestId(std::string_view request_id) {
 inline void EnsureRequestIdAsTraceId(RequestContext& ctx) {
     if (!ctx.trace_id.empty() || ctx.request_id.empty()) return;
     ctx.trace_id = DeriveTraceIdFromRequestId(ctx.request_id);
+}
+
+// Read-only accessors for the (optional, compatible) caller-attribution
+// fields, returning an empty view when unset. Lets call sites use them
+// uniformly without dereferencing the optional; unset => empty => omitted from
+// logs and span attributes.
+inline std::string_view caller_id_of(const RequestContext& ctx) {
+    return ctx.caller_id ? std::string_view(*ctx.caller_id) : std::string_view{};
+}
+inline std::string_view caller_role_of(const RequestContext& ctx) {
+    return ctx.caller_role ? std::string_view(*ctx.caller_role) : std::string_view{};
 }
 
 // Deserialize a RequestContext from wire bytes (received via

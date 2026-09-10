@@ -221,6 +221,20 @@ class ScopedSpanImpl {
                 nostd::string_view(parent_ctx->request_id.data(),
                                    parent_ctx->request_id.size()));
         }
+        // Caller attribution (disambiguate which dummy-client / thread issued
+        // the RPC; see plan_trace.md §2.8). Recorded only when the caller
+        // actually supplied them -- absent (compatible field unset) on older /
+        // non-sglang callers, so those spans are unchanged.
+        if (parent_ctx != nullptr) {
+            if (auto v = caller_id_of(*parent_ctx); !v.empty()) {
+                span_->SetAttribute("caller.id",
+                                    nostd::string_view(v.data(), v.size()));
+            }
+            if (auto v = caller_role_of(*parent_ctx); !v.empty()) {
+                span_->SetAttribute("caller.role",
+                                    nostd::string_view(v.data(), v.size()));
+            }
+        }
     }
     ~ScopedSpanImpl() {
         if (span_) span_->End();

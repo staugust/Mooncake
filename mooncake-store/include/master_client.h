@@ -252,7 +252,9 @@ class MasterClient {
         // thread) since master_client_ is shared.
         if (current_request_context) {
             VLOG(2) << "hop-B inject request_id="
-                    << current_request_context->request_id;
+                    << current_request_context->request_id
+                    << " caller=" << caller_id_of(*current_request_context)
+                    << " role=" << caller_role_of(*current_request_context);
         }
         auto start_time = std::chrono::steady_clock::now();
         auto ret = co_await pool->send_request(
@@ -324,7 +326,9 @@ class MasterClient {
         // thread) since master_client_ is shared.
         if (current_request_context) {
             VLOG(2) << "hop-B inject request_id="
-                    << current_request_context->request_id;
+                    << current_request_context->request_id
+                    << " caller=" << caller_id_of(*current_request_context)
+                    << " role=" << caller_role_of(*current_request_context);
         }
         auto start_time = std::chrono::steady_clock::now();
         return async_simple::coro::syncAwait(

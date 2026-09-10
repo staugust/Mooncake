@@ -344,7 +344,9 @@ void RealClient::put_dummy_helper(
     if (!att.empty()) {
         rc = deserialize_request_context(att);
         VLOG(2) << "hop-A bridge request_id=" << rc.request_id
-                << " trace_id=" << rc.trace_id;
+                << " trace_id=" << rc.trace_id
+                << " caller=" << caller_id_of(rc)
+                << " role=" << caller_role_of(rc);
     }
     // OpenTelemetry: open a hop-A SERVER span as a child of the incoming trace
     // context, then refresh `rc` so the downstream hop-B (master) attachment
@@ -460,7 +462,9 @@ void RealClient::put_batch_dummy_helper(
     if (!att.empty()) {
         rc = deserialize_request_context(att);
         VLOG(2) << "hop-A bridge request_id=" << rc.request_id
-                << " trace_id=" << rc.trace_id;
+                << " trace_id=" << rc.trace_id
+                << " caller=" << caller_id_of(rc)
+                << " role=" << caller_role_of(rc);
     }
     // OpenTelemetry: open a hop-A SERVER span as a child of the incoming trace
     // context, then refresh `rc` so the downstream hop-B (master) attachment
@@ -569,7 +573,9 @@ void RealClient::put_parts_dummy_helper(
     if (!att.empty()) {
         rc = deserialize_request_context(att);
         VLOG(2) << "hop-A bridge request_id=" << rc.request_id
-                << " trace_id=" << rc.trace_id;
+                << " trace_id=" << rc.trace_id
+                << " caller=" << caller_id_of(rc)
+                << " role=" << caller_role_of(rc);
     }
     // OpenTelemetry: open a hop-A SERVER span as a child of the incoming trace
     // context, then refresh `rc` so the downstream hop-B (master) attachment
@@ -1058,7 +1064,9 @@ void RealClient::get_buffer_info_dummy_helper(
     if (!att.empty()) {
         rc = deserialize_request_context(att);
         VLOG(2) << "hop-A bridge request_id=" << rc.request_id
-                << " trace_id=" << rc.trace_id;
+                << " trace_id=" << rc.trace_id
+                << " caller=" << caller_id_of(rc)
+                << " role=" << caller_role_of(rc);
     }
     // OpenTelemetry: open a hop-A SERVER span as a child of the incoming trace
     // context, then refresh `rc` so the downstream hop-B (master) attachment
@@ -1201,7 +1209,9 @@ void RealClient::batch_put_from_dummy_helper(
     if (!att.empty()) {
         rc = deserialize_request_context(att);
         VLOG(2) << "hop-A bridge request_id=" << rc.request_id
-                << " trace_id=" << rc.trace_id;
+                << " trace_id=" << rc.trace_id
+                << " caller=" << caller_id_of(rc)
+                << " role=" << caller_role_of(rc);
     }
     // OpenTelemetry: open a hop-A SERVER span as a child of the incoming trace
     // context, then refresh `rc` so the downstream hop-B (master) attachment
@@ -1409,7 +1419,9 @@ void RealClient::batch_get_into_dummy_helper(
     if (!att.empty()) {
         rc = deserialize_request_context(att);
         VLOG(2) << "hop-A bridge request_id=" << rc.request_id
-                << " trace_id=" << rc.trace_id;
+                << " trace_id=" << rc.trace_id
+                << " caller=" << caller_id_of(rc)
+                << " role=" << caller_role_of(rc);
     }
     // OpenTelemetry: open a hop-A SERVER span as a child of the incoming trace
     // context, then refresh `rc` so the downstream hop-B (master) attachment
@@ -1547,7 +1559,9 @@ void RealClient::batchIsExist_internal_rpc(
     if (!att.empty()) {
         rc = deserialize_request_context(att);
         VLOG(2) << "hop-A bridge request_id=" << rc.request_id
-                << " trace_id=" << rc.trace_id;
+                << " trace_id=" << rc.trace_id
+                << " caller=" << caller_id_of(rc)
+                << " role=" << caller_role_of(rc);
     }
     // OpenTelemetry: open a hop-A SERVER span as a child of the incoming trace
     // context, then refresh `rc` so the downstream hop-B (master) attachment
@@ -1582,7 +1596,9 @@ void RealClient::isExist_internal_rpc(
     if (!att.empty()) {
         rc = deserialize_request_context(att);
         VLOG(2) << "hop-A bridge request_id=" << rc.request_id
-                << " trace_id=" << rc.trace_id;
+                << " trace_id=" << rc.trace_id
+                << " caller=" << caller_id_of(rc)
+                << " role=" << caller_role_of(rc);
     }
     // OpenTelemetry: open a hop-A SERVER span as a child of the incoming trace
     // context, then refresh `rc` so the downstream hop-B (master) attachment
@@ -1611,7 +1627,9 @@ void RealClient::remove_internal_rpc(
     if (!att.empty()) {
         rc = deserialize_request_context(att);
         VLOG(2) << "hop-A bridge request_id=" << rc.request_id
-                << " trace_id=" << rc.trace_id;
+                << " trace_id=" << rc.trace_id
+                << " caller=" << caller_id_of(rc)
+                << " role=" << caller_role_of(rc);
     }
     // OpenTelemetry: open a hop-A SERVER span as a child of the incoming trace
     // context, then refresh `rc` so the downstream hop-B (master) attachment
@@ -1640,7 +1658,9 @@ void RealClient::getSize_internal_rpc(
     if (!att.empty()) {
         rc = deserialize_request_context(att);
         VLOG(2) << "hop-A bridge request_id=" << rc.request_id
-                << " trace_id=" << rc.trace_id;
+                << " trace_id=" << rc.trace_id
+                << " caller=" << caller_id_of(rc)
+                << " role=" << caller_role_of(rc);
     }
     // OpenTelemetry: open a hop-A SERVER span as a child of the incoming trace
     // context, then refresh `rc` so the downstream hop-B (master) attachment
