@@ -19,6 +19,7 @@
 #include <ylt/coro_io/coro_io.hpp>
 
 #include "utils/scoped_vlog_timer.h"
+#include "request_context.h"
 
 namespace mooncake {
 
@@ -2080,12 +2081,30 @@ tl::expected<P2PClientService::RouteIterator, ErrorCode>
 P2PClientService::BuildRouteIter(std::string_view key,
                                  const ReadRouteConfig& config,
                                  std::vector<ResolvedRoute> pre_fetched) {
+    // Snapshot the per-request attachment ONCE here, on the caller's thread
+    // (where g_current_ctx is valid for this request), and carry it explicitly
+    // into the master-fetch closure. The detached read coroutine
+    // (RunReadWithRetry, driven via the coro executor) later resumes
+    // AsyncGetReplicaList on a worker thread whose thread_local belongs to a
+    // different request; reading g_current_ctx there would drop the id or
+    // cross-contaminate another request, so we never read it there.
+    std::string ctx_attachment = current_request_context_attachment();
+    // Materialize `key` into a self-owned std::string captured by the closure.
+    // The closure may be invoked later from the detached read coroutine (a
+    // coro-executor worker thread), after the caller's string_view backing
+    // could have been destroyed. RouteIterator::key_ already owns its own copy
+    // (built from `key` below); this closure needs an independent, owned copy
+    // too, so neither side dangles across the async boundary.
+    std::string key_owned = std::string(key);
     auto routes = std::move(pre_fetched);
     uint64_t object_size = routes.empty() ? 0 : routes.front().object_size;
     RouteIterator iter(key, std::move(routes), object_size,
                        route_cache_ ? &(*route_cache_) : nullptr,
-                       [this, key, config]() {
-                           return AsyncResolveRoutesFromMaster(key, config);
+                       [this, config, key_owned = std::move(key_owned),
+                        ctx_attachment = std::move(ctx_attachment)]() {
+                           return AsyncResolveRoutesFromMaster(
+                               std::string_view(key_owned), config,
+                               ctx_attachment);
                        });
     if (iter.empty()) {
         iter.Prime();
@@ -2097,10 +2116,12 @@ P2PClientService::BuildRouteIter(std::string_view key,
 }
 
 async_simple::coro::Lazy<std::vector<P2PClientService::ResolvedRoute>>
-P2PClientService::AsyncResolveRoutesFromMaster(std::string_view key,
-                                               const ReadRouteConfig& config) {
+P2PClientService::AsyncResolveRoutesFromMaster(
+    std::string_view key, const ReadRouteConfig& config,
+    std::string ctx_attachment) {
     auto replica_result =
-        co_await master_client_.AsyncGetReplicaList(key, config);
+        co_await master_client_.AsyncGetReplicaList(
+            key, config, std::move(ctx_attachment));
     if (!replica_result) {
         if (replica_result.error() != ErrorCode::OBJECT_NOT_FOUND) {
             LOG(ERROR) << "Failed to query replica list, key=" << key

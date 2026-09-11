@@ -84,7 +84,8 @@ class MasterClient {
         tl::expected<GetReplicaListResponse, ErrorCode>>
     AsyncGetReplicaList(std::string_view key,
                         const GetReplicaListRequestConfig& config =
-                            GetReplicaListRequestConfig());
+                            GetReplicaListRequestConfig(),
+                        std::string ctx_attachment = {});
 
     /**
      * @brief Batch query read routes
@@ -223,36 +224,41 @@ class MasterClient {
      */
     template <auto ServiceMethod, typename ReturnType, typename... Args>
     [[nodiscard]] async_simple::coro::Lazy<tl::expected<ReturnType, ErrorCode>>
-    invoke_rpc_async(Args&&... args) {
+    invoke_rpc_async(std::string ctx_attachment, Args&&... args) {
         return invoke_rpc_async_with_pool<ServiceMethod, ReturnType>(
-            client_accessor_.GetClientPool(), std::forward<Args>(args)...);
+            client_accessor_.GetClientPool(), std::move(ctx_attachment),
+            std::forward<Args>(args)...);
     }
 
     template <auto ServiceMethod, typename ReturnType, typename... Args>
     [[nodiscard]] async_simple::coro::Lazy<tl::expected<ReturnType, ErrorCode>>
     invoke_rpc_async_with_pool(
         std::shared_ptr<coro_io::client_pool<coro_rpc::coro_rpc_client>> pool,
+        std::string ctx_attachment,
         Args&&... args) {
         // Increment RPC counter
         if (metrics_) {
             metrics_->rpc_count.inc({RpcNameTraits<ServiceMethod>::value});
         }
 
-        // Bypass inject: snapshot the calling thread's per-request request_id
-        // (empty when no per-request context is set) ONCE at entry, then carry
-        // it into the pool-work closure. We never read g_current_ctx from a
-        // (possibly different) pool worker thread. An empty attachment is
-        // wire-identical to a plain send_request; non-reading server handlers
-        // ignore it, so this is gray across all master RPCs.
-        auto current_request_context = get_current_request_context();
-        std::string ctx_attachment = current_request_context_attachment();
-        // Real-client-side hop-B inject trace. VLOG(2): off at -v=1 (where
-        // only the master logs), on at -v>=2 for per-hop tracing. Fires on
-        // both the real path (in-proc) and the dummy path (real-client server
-        // thread) since master_client_ is shared.
-        if (current_request_context) {
-            VLOG(2) << "hop-B inject request_id="
-                    << current_request_context->request_id;
+        // The per-request context attachment is supplied EXPLICITLY by the
+        // caller, snapshotted once on the request's originating thread
+        // (invoke_rpc / invoke_rpc_via at the sync boundary, or the P2P
+        // BuildRouteIter closure). We deliberately do NOT read the thread_local
+        // g_current_ctx here: this coroutine body can resume on a coro-executor
+        // / IO worker thread whose thread_local belongs to a different request,
+        // so reading it would drop the id (empty) or, worse, cross-contaminate
+        // another request's id. An empty attachment is wire-identical to a
+        // plain send_request; non-reading server handlers ignore it.
+        //
+        // hop-B inject trace (VLOG(2), -v>=2 only): deserialize the explicit
+        // attachment to log request_id. One struct_pack deserialize per RPC,
+        // and only when verbose tracing is enabled.
+        if (VLOG_IS_ON(2) && !ctx_attachment.empty()) {
+            auto req_ctx = deserialize_request_context(
+                std::string_view(ctx_attachment.data(),
+                                 ctx_attachment.size()));
+            VLOG(2) << "hop-B inject request_id=" << req_ctx.request_id;
         }
         auto start_time = std::chrono::steady_clock::now();
         auto ret = co_await pool->send_request(
@@ -285,8 +291,14 @@ class MasterClient {
     template <auto ServiceMethod, typename ReturnType, typename... Args>
     [[nodiscard]] tl::expected<ReturnType, ErrorCode> invoke_rpc(
         Args&&... args) {
+        // Synchronous path: snapshot the per-request attachment ONCE here, on
+        // the calling thread (where g_current_ctx is set for this request),
+        // and forward it explicitly. syncAwait drives the coroutine inline on
+        // this same thread, so reading g_current_ctx here is safe; the async
+        // templates above never touch the thread_local.
         return async_simple::coro::syncAwait(
             invoke_rpc_async<ServiceMethod, ReturnType>(
+                current_request_context_attachment(),
                 std::forward<Args>(args)...));
     }
 
@@ -398,9 +410,12 @@ class MasterClient {
     template <auto ServiceMethod, typename ReturnType, typename... Args>
     [[nodiscard]] tl::expected<ReturnType, ErrorCode> invoke_rpc_via(
         RpcClientAccessor& accessor, Args&&... args) {
+        // See invoke_rpc: snapshot the attachment here on the calling thread.
         return async_simple::coro::syncAwait(
             invoke_rpc_async_with_pool<ServiceMethod, ReturnType>(
-                accessor.GetClientPool(), std::forward<Args>(args)...));
+                accessor.GetClientPool(),
+                current_request_context_attachment(),
+                std::forward<Args>(args)...));
     }
 
    protected:

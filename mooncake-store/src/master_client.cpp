@@ -252,10 +252,12 @@ tl::expected<GetReplicaListResponse, ErrorCode> MasterClient::GetReplicaList(
 
 async_simple::coro::Lazy<tl::expected<GetReplicaListResponse, ErrorCode>>
 MasterClient::AsyncGetReplicaList(std::string_view key,
-                                  const GetReplicaListRequestConfig& config) {
+                                  const GetReplicaListRequestConfig& config,
+                                  std::string ctx_attachment) {
     auto result =
         co_await invoke_rpc_async<&WrappedMasterService::GetReplicaList,
-                                  GetReplicaListResponse>(key, config);
+                                  GetReplicaListResponse>(
+            std::move(ctx_attachment), key, config);
     co_return result;
 }
 

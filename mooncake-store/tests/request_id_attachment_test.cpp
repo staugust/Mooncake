@@ -24,6 +24,7 @@
 #include <regex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 #include "centralized_master_client.h"
@@ -179,10 +180,92 @@ TEST_F(RequestIdAttachmentTest, CarriesRequestIdOnPutStartRoute) {
            "single-key put-start route (invoke_rpc -> PutStart)";
 }
 
+// ---------------------------------------------------------------------------
+// Async-path regression tests for the per-request attachment.
+//
+// AsyncGetReplicaList forwards an EXPLICIT std::string ctx_attachment through
+// invoke_rpc_async -> invoke_rpc_async_with_pool, which must NOT read the
+// thread_local g_current_ctx. The earlier bug read g_current_ctx at the async
+// coroutine's entry; because that coroutine is resumed on a worker thread
+// (the detached RunReadWithRetry via the coro executor) whose thread_local is
+// not this request's, the id was dropped (empty) or, with a leftover scope on
+// that thread, cross-contaminated with another request's id.
+//
+// We reproduce both failure modes by driving AsyncGetReplicaList from a fresh
+// std::thread (a worker whose thread_local is independent of the test thread's)
+// and asserting the handler VLOGs the EXPLICIT id, proving the attachment is
+// carried by value rather than re-read from a worker thread's thread_local.
+// ---------------------------------------------------------------------------
+
+// Loss regression: a worker thread with no per-request context must still
+// propagate the explicitly-snapshot attachment. A buggy version re-reading
+// thread_local would send an empty attachment and the handler would not log
+// the id (sink stays empty).
+TEST_F(RequestIdAttachmentTest, AsyncCarriesExplicitAttachmentNoLoss) {
+    RequestContext ctx;
+    ctx.request_id = "async-explicit";
+    set_current_request_context(std::move(ctx));
+    std::string attachment = current_request_context_attachment();
+    clear_current_request_context();  // The worker thread below never sets it.
+
+    sink_.last_request_id_.clear();
+    std::thread worker([&] {
+        auto result = async_simple::coro::syncAwait(
+            client_->AsyncGetReplicaList(
+                "nonexistent_key_async_loss", GetReplicaListRequestConfig{},
+                attachment));
+        (void)result;
+    });
+    worker.join();
+
+    EXPECT_EQ(sink_.last_request_id_, "async-explicit")
+        << "AsyncGetReplicaList dropped the per-request id on the async/worker "
+           "path (handler saw no attachment); invoke_rpc_async_with_pool must "
+           "carry the explicit attachment, not read an empty thread_local";
+}
+
+// Pollution regression: a worker thread carrying a DIFFERENT request's context
+// in its thread_local must NOT leak it into this request's master RPC. A buggy
+// version re-reading thread_local would attach "async-intruder"; the fix must
+// send the explicit "async-owner".
+TEST_F(RequestIdAttachmentTest, AsyncUsesExplicitAttachmentNotWorkerThreadLocal) {
+    RequestContext ctx;
+    ctx.request_id = "async-owner";
+    set_current_request_context(std::move(ctx));
+    std::string owner_attachment = current_request_context_attachment();
+    clear_current_request_context();
+
+    sink_.last_request_id_.clear();
+    std::thread worker([&] {
+        // Leave a different request's context on this worker's thread_local to
+        // mimic a live/residual CurrentCtxScope on a shared worker thread.
+        RequestContext intruder;
+        intruder.request_id = "async-intruder";
+        set_current_request_context(std::move(intruder));
+
+        auto result = async_simple::coro::syncAwait(
+            client_->AsyncGetReplicaList(
+                "nonexistent_key_async_pollute", GetReplicaListRequestConfig{},
+                owner_attachment));
+        (void)result;
+        clear_current_request_context();
+    });
+    worker.join();
+
+    EXPECT_EQ(sink_.last_request_id_, "async-owner")
+        << "AsyncGetReplicaList cross-contaminated the request_id by reading "
+           "the worker thread's thread_local instead of the explicit "
+           "attachment";
+    EXPECT_NE(sink_.last_request_id_, "async-intruder");
+}
+
 // Note: the dummy hop A->B bridge is exercised only end-to-end (DummyClient +
 // real-client coro_rpc server + master). This in-process harness drives the
 // real path (hop B only), so it does not cover the hop A bridge; that remains
 // verified by reasoning (same-thread syncAwait + CurrentCtxScope, per plan).
+// The async GetReplicaList path (explicit ctx_attachment carried through
+// invoke_rpc_async / invoke_rpc_async_with_pool) is covered by the two tests
+// above (no-loss + no-pollution across a non-request worker thread).
 
 }  // namespace
 }  // namespace testing
