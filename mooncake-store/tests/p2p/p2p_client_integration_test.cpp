@@ -543,14 +543,12 @@ TEST_F(P2PClientIntegrationTest, PutOverwrite) {
         auto r = client_->Put(key, s, WriteRouteRequestConfig{});
         ASSERT_TRUE(r.has_value());
 
-        auto replicas =
-            master_.GetWrapped().GetReplicaListInternal(key, config);
-        ASSERT_TRUE(replicas.has_value());
-        ASSERT_EQ(replicas.value().replicas.size(), 1);
-        auto p2p_proxy_descriptor =
-            replicas.value().replicas[0].get_p2p_proxy_descriptor();
-        ASSERT_EQ(p2p_proxy_descriptor.client_id, client_->GetClientID());
-        ASSERT_EQ(p2p_proxy_descriptor.object_size, data1.size());
+        auto routes = master_.GetWrapped().GetReadRoute(
+            P2PGetReadRouteRequest{.key = key, .config = config});
+        ASSERT_TRUE(routes.has_value());
+        ASSERT_EQ(routes.value().size(), 1);
+        ASSERT_EQ(routes.value()[0].client_id, client_->GetClientID());
+        ASSERT_EQ(routes.value()[0].object_size, data1.size());
     }
 
     // Overwrite
@@ -563,14 +561,12 @@ TEST_F(P2PClientIntegrationTest, PutOverwrite) {
 
         // due to the write operation is canceled,
         // the object size of read route must not be changed
-        auto replicas =
-            master_.GetWrapped().GetReplicaListInternal(key, config);
-        ASSERT_TRUE(replicas.has_value());
-        ASSERT_EQ(replicas.value().replicas.size(), 1);
-        auto p2p_proxy_descriptor =
-            replicas.value().replicas[0].get_p2p_proxy_descriptor();
-        ASSERT_EQ(p2p_proxy_descriptor.client_id, client_->GetClientID());
-        ASSERT_EQ(p2p_proxy_descriptor.object_size, data1.size());
+        auto routes = master_.GetWrapped().GetReadRoute(
+            P2PGetReadRouteRequest{.key = key, .config = config});
+        ASSERT_TRUE(routes.has_value());
+        ASSERT_EQ(routes.value().size(), 1);
+        ASSERT_EQ(routes.value()[0].client_id, client_->GetClientID());
+        ASSERT_EQ(routes.value()[0].object_size, data1.size());
     }
 
     // Read back – should see data1 (first version)
