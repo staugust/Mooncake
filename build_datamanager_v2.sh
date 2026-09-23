@@ -17,7 +17,9 @@ readonly WHEEL_OUTPUT_DIR="${REPO_ROOT}/mooncake-wheel/${WHEEL_OUTPUT_SUBDIR}"
 
 PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 EP_TORCH_VERSIONS="${EP_TORCH_VERSIONS:-2.13.0}"
-TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-9.0}"
+# The EP kernel uses cache hints that are only valid from sm_80 onward; keep this
+# build deterministic and restrict it to sm_90 and newer CUDA architectures.
+TORCH_CUDA_ARCH_LIST="9.0 10.0 12.0+PTX"
 BUILD_JOBS="${BUILD_JOBS:-$(nproc)}"
 CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
 CUDA_STUB_DIR="${CUDA_STUB_DIR:-${CUDA_HOME}/lib64/stubs}"
