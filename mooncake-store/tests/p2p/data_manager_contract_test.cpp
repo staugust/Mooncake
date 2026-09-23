@@ -146,10 +146,15 @@ struct CallbackRecorder {
         std::string key;
         UUID tier_id;
     };
+    struct SegmentSyncEvent {
+        Segment segment;
+        bool mount;
+    };
 
     mutable std::mutex mu;
     std::vector<AddEvent> adds;
     std::vector<RemoveEvent> removes;
+    std::vector<SegmentSyncEvent> segment_syncs;
     std::vector<std::pair<std::string, std::optional<UUID>>> rectifies;
 
     size_t AddCount() const {
@@ -159,6 +164,20 @@ struct CallbackRecorder {
     size_t RemoveCount() const {
         std::lock_guard<std::mutex> lock(mu);
         return removes.size();
+    }
+    size_t SegmentMountCount() const {
+        std::lock_guard<std::mutex> lock(mu);
+        return std::count_if(segment_syncs.begin(), segment_syncs.end(),
+                             [](const SegmentSyncEvent& event) {
+                                 return event.mount;
+                             });
+    }
+    size_t SegmentUnmountCount() const {
+        std::lock_guard<std::mutex> lock(mu);
+        return std::count_if(segment_syncs.begin(), segment_syncs.end(),
+                             [](const SegmentSyncEvent& event) {
+                                 return !event.mount;
+                             });
     }
     size_t RectifyCount() const {
         std::lock_guard<std::mutex> lock(mu);
@@ -241,8 +260,11 @@ std::unique_ptr<ManagerEnv> MakeManager(DataManagerVersion version,
         recorder->removes.push_back({std::string(key), tier_id});
         return {};
     };
-    callbacks.segment_sync = [](const Segment&,
-                                bool) -> tl::expected<void, ErrorCode> {
+    callbacks.segment_sync = [recorder](
+                                  const Segment& segment,
+                                  bool mount) -> tl::expected<void, ErrorCode> {
+        std::lock_guard<std::mutex> lock(recorder->mu);
+        recorder->segment_syncs.push_back({segment, mount});
         return {};
     };
     callbacks.rectify_route = [recorder](std::string_view key,
@@ -1489,6 +1511,29 @@ class DataManagerTieredContractTest : public DataManagerContractTest {
         return UUID{0, 0};
     }
 };
+
+// A tiler cannot be used by the Master until its segment has been mounted.
+// This is the contract that prevents heartbeat usage updates from being
+// rejected with SEGMENT_NOT_FOUND.
+TEST_P(DataManagerTieredContractTest, SegmentsAreMountedAndUnmounted) {
+    std::shared_ptr<CallbackRecorder> recorder;
+    {
+        auto env = MakeManager(GetParam(), kSmallDramPlusStorageTiers,
+                                LocalTransferMode::MEMCPY);
+        recorder = env->recorder;
+        auto views = env->manager->GetTierViews();
+        ASSERT_EQ(views.size(), 2);
+
+        EXPECT_EQ(recorder->SegmentMountCount(), views.size());
+        for (const auto& event : recorder->segment_syncs) {
+            ASSERT_TRUE(event.mount);
+            EXPECT_TRUE(event.segment.IsP2PSegment());
+            EXPECT_EQ(event.segment.name, MakeTierSegmentName(event.segment.id));
+        }
+    }
+
+    EXPECT_EQ(recorder->SegmentUnmountCount(), 2);
+}
 
 TEST_P(DataManagerTieredContractTest, TierViewsCoverEveryConfiguredTier) {
     auto views = env_->manager->GetTierViews();

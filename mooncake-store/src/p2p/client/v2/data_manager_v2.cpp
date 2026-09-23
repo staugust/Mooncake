@@ -464,6 +464,36 @@ tl::expected<void, ErrorCode> DataManagerV2::Init() {
     }
     tilers_.Rebuild();
 
+    // V1 mounts every tier while TieredBackend is initialized. V2 has to keep
+    // that lifecycle invariant: the Master first sees the client with an empty
+    // segment list, so heartbeat usage for a tiler that was never mounted is
+    // rejected as SEGMENT_NOT_FOUND.
+    if (metadata_callbacks_.segment_sync) {
+        for (const auto& tiler : tilers_.by_priority) {
+            const TierView view = tiler->GetView();
+            Segment segment;
+            segment.id = view.id;
+            segment.name = view.GetName();
+            segment.size = view.capacity;
+            auto& segment_extra = segment.GetP2PExtra();
+            segment_extra.priority = view.priority;
+            segment_extra.tags = view.tags;
+            segment_extra.memory_type = view.type;
+            segment_extra.usage = view.usage;
+
+            auto mounted =
+                metadata_callbacks_.segment_sync(segment, /*mount=*/true);
+            if (!mounted) {
+                LOG(ERROR) << "Failed to mount V2 tier with Master"
+                           << ", tiler_id=" << view.id
+                           << ", tiler_name=" << view.GetName()
+                           << ", capacity=" << view.capacity
+                           << ", error=" << mounted.error();
+                return tl::make_unexpected(mounted.error());
+            }
+        }
+    }
+
     std::vector<UUID> tiler_ids;
     tiler_ids.reserve(tilers_.Size());
     for (const auto& tiler : tilers_.by_priority) {
