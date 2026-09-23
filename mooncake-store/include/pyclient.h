@@ -72,29 +72,6 @@ class PyClient {
         const std::vector<std::vector<size_t>>& all_sizes,
         const WriteConfig& config) = 0;
 
-    // Session-scoped ranged reads. The default stubs keep DummyClient
-    // unchanged; RealClient overrides them with the real implementations.
-
-    virtual std::vector<int> batch_get_session_start(
-        const std::vector<std::string>& keys) {
-        return std::vector<int>(
-            keys.size(), static_cast<int>(toInt(ErrorCode::INVALID_PARAMS)));
-    }
-
-    virtual std::vector<int> batch_get_into_multi_buffer_ranges(
-        const std::vector<std::string>& keys,
-        const std::vector<std::vector<void*>>& /*all_buffers*/,
-        const std::vector<std::vector<size_t>>& /*all_sizes*/,
-        const std::vector<std::vector<size_t>>& /*all_src_offsets*/) {
-        return std::vector<int>(
-            keys.size(), static_cast<int>(toInt(ErrorCode::INVALID_PARAMS)));
-    }
-
-    virtual int batch_get_session_end(
-        const std::vector<std::string>& /*keys*/) {
-        return static_cast<int>(toInt(ErrorCode::INVALID_PARAMS));
-    }
-
     virtual std::shared_ptr<BufferHandle> get_buffer(
         const std::string& key, const ReadRouteConfig& config = {}) = 0;
 
