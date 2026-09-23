@@ -114,11 +114,16 @@ if [[ ! -f "${NVLINK_OUTPUT_DIR}/nvlink_allocator.so" ]]; then
 fi
 
 log "Step 4/4: building mooncake wheel"
-CU13_BUILD=1 \
-BUILD_WITH_EP=1 \
-EP_TORCH_VERSIONS="$EP_TORCH_VERSIONS" \
-TORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" \
-bash "${REPO_ROOT}/scripts/build_wheel.sh" "$PYTHON_VERSION" "$WHEEL_OUTPUT_SUBDIR"
+# scripts/build_wheel.sh uses paths relative to the Mooncake repository root.
+# Enter that directory so this launcher works from any current directory.
+(
+    cd "$REPO_ROOT"
+    CU13_BUILD=1 \
+    BUILD_WITH_EP=1 \
+    EP_TORCH_VERSIONS="$EP_TORCH_VERSIONS" \
+    TORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" \
+    bash "$REPO_ROOT/scripts/build_wheel.sh" "$PYTHON_VERSION" "$WHEEL_OUTPUT_SUBDIR"
+)
 
 shopt -s nullglob
 WHEELS=("${WHEEL_OUTPUT_DIR}"/*.whl)
