@@ -1,5 +1,7 @@
 #include "p2p/client/v2/migration_engine.h"
 
+#include "p2p/client/p2p_client_metric.h"
+
 #include <algorithm>
 #include <utility>
 
@@ -188,9 +190,21 @@ tl::expected<void, ErrorCode> MigrationEngine::Execute(
         }
     }
 
+    if (tier_metric_ != nullptr) {
+        tier_metric_->OnReplicaAdded(request.destination_tiler);
+        if (request.kind == MovementKind::kMigrate && source_removed) {
+            tier_metric_->OnReplicaRemoved(request.source_tiler);
+        }
+        tier_metric_->OnMoved(request.source_tiler, request.destination_tiler);
+    }
+
     std::lock_guard<std::mutex> lock(stats_mu_);
     ++stats_.succeeded;
     return {};
+}
+
+void MigrationEngine::SetTierMetric(TierMetric* tier_metric) {
+    tier_metric_ = tier_metric;
 }
 
 std::vector<tl::expected<void, ErrorCode>> MigrationEngine::ExecuteBatch(

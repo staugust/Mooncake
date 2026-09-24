@@ -550,6 +550,7 @@ tl::expected<void, ErrorCode> DataManagerV2::Init() {
             return AllocateWithPolicy(*tiler, size, alignment, source);
         },
         clock_, config_.migration);
+    migration_engine_->SetTierMetric(tier_metric_.get());
 
     event_center_ = std::make_shared<EventCenter>(config_.events);
 

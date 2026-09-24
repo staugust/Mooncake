@@ -27,6 +27,7 @@
 #include "p2p/client/v2/block_pool.h"
 #include "p2p/client/v2/block_registry.h"
 #include "p2p/client/v2/event_center.h"
+#include "p2p/client/p2p_client_metric.h"
 #include "p2p/client/v2/local_copy_engine.h"
 #include "p2p/client/v2/migration_engine.h"
 #include "p2p/client/v2/tiler_manager.h"
@@ -124,6 +125,12 @@ class MigrationEngineTest : public ::testing::Test {
         slow_ = tilers_.Find(slow_id);
         ASSERT_NE(fast_, nullptr);
         ASSERT_NE(slow_, nullptr);
+        tier_metric_.RegisterTier(
+            fast_->Id(), "fast", fast_->Medium(), fast_->Priority(),
+            fast_->Capacity(), [this]() -> size_t { return fast_->Usage(); });
+        tier_metric_.RegisterTier(
+            slow_->Id(), "slow", slow_->Medium(), slow_->Priority(),
+            slow_->Capacity(), [this]() -> size_t { return slow_->Usage(); });
         // The offload direction under test: an addressable tier to one that
         // exposes no address at all.
         ASSERT_TRUE(fast_->IsTeAddressable());
@@ -163,6 +170,7 @@ class MigrationEngineTest : public ::testing::Test {
                 return tiler->Allocate(size, alignment);
             },
             clock_);
+        engine_->SetTierMetric(&tier_metric_);
     }
 
     void TearDown() override {
@@ -280,6 +288,7 @@ class MigrationEngineTest : public ::testing::Test {
     TilerManager* slow_ = nullptr;
     LocalCopyEngine copier_{LocalTransferConfig{}};
     MetadataCallbacks callbacks_;
+    mooncake::TierMetric tier_metric_;
     std::vector<ReplicaCall> added_;
     std::vector<ReplicaCall> removed_;
     std::vector<AllocateCall> allocations_;
@@ -330,6 +339,40 @@ TEST_F(MigrationEngineTest, ReplicateCopiesTheBytesAndKeepsBothReplicas) {
     const MigrationStats stats = engine_->Stats();
     EXPECT_EQ(stats.executed, 1U);
     EXPECT_EQ(stats.succeeded, 1U);
+}
+
+// A successful migration must reach the same metric sink as normal Puts and
+// deletes. Otherwise the physical SSD can fill while the source tier still
+// reports that nothing was offloaded.
+TEST_F(MigrationEngineTest, SuccessfulMigrationUpdatesTierMetrics) {
+    const std::string key = "migration_metrics";
+    const std::vector<uint8_t> payload = Pattern(kBlockSize, 0x45);
+
+    ImmutableBlock source_block = Commit(*fast_, key, payload);
+    ASSERT_TRUE(static_cast<bool>(source_block));
+    auto registration = registry_.Match(key);
+    ASSERT_TRUE(registration.has_value());
+    const BlockId source_id = source_block.Id();
+    source_block = ImmutableBlock();
+
+    const std::array<std::string, 1> fast_label{"fast"};
+    const std::array<std::string, 1> slow_label{"slow"};
+    // The helper registers the block through TilerManager, not the production
+    // Put path, so model that path's initial metric update explicitly.
+    tier_metric_.OnReplicaAdded(fast_->Id());
+    ASSERT_EQ(tier_metric_.key_count.value(fast_label), 1);
+    ASSERT_EQ(tier_metric_.key_count.value(slow_label), 0);
+
+    auto result = engine_->Execute(MakeRequest(
+        MovementKind::kMigrate, key, *registration, source_id, fast_, slow_));
+    ASSERT_TRUE(result.has_value()) << toString(result.error());
+
+    EXPECT_EQ(tier_metric_.key_count.value(fast_label), 0);
+    EXPECT_EQ(tier_metric_.key_count.value(slow_label), 1);
+    EXPECT_EQ(tier_metric_.offloaded_keys.value(fast_label), 1);
+    EXPECT_EQ(tier_metric_.offloaded_keys.value(slow_label), 0);
+    EXPECT_EQ(tier_metric_.onboarded_keys.value(fast_label), 0);
+    EXPECT_EQ(tier_metric_.onboarded_keys.value(slow_label), 0);
 }
 
 TEST_F(MigrationEngineTest, MigrateRemovesTheSourceOnceTheDestinationIsUp) {

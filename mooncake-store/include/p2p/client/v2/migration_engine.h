@@ -37,6 +37,10 @@
 #include "p2p/client/v2/v2_common.h"
 #include "types.h"
 
+namespace mooncake {
+struct TierMetric;
+}  // namespace mooncake
+
 namespace mooncake::v2 {
 
 /**
@@ -152,6 +156,14 @@ class MigrationEngine : public MovementSink {
     std::vector<tl::expected<void, ErrorCode>> ExecuteBatch(
         const std::vector<MovementRequest>& requests);
 
+    /**
+     * @brief Register the shared per-tier metric collector.
+     *
+     * The pointer is borrowed, not owned. The caller must keep the
+     * TierMetric alive until this engine is stopped.
+     */
+    void SetTierMetric(TierMetric* tier_metric);
+
     // --- scheduling ---
 
     /**
@@ -189,6 +201,7 @@ class MigrationEngine : public MovementSink {
     MetadataCallbacks* callbacks_ = nullptr;
     AllocateBlockCallback allocate_block_;
     std::shared_ptr<Clock> clock_;
+    TierMetric* tier_metric_ = nullptr;
     MigrationSchedulerConfig scheduler_;
 
     /** One queued command: the proposal plus the lease that must be settled. */
