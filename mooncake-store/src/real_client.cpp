@@ -8410,7 +8410,6 @@ RealClient::batch_get_into_offload_object_internal(
     return {};
 }
 
-
 namespace {
 RequestContext LoadRequestContextAttachment(const std::string &attachment) {
     RequestContext request_context;
@@ -8463,9 +8462,8 @@ void RealClient::batch_get_into_dummy_helper_rpc(
     std::optional<CurrentCtxScope> ctx_guard;
     ctx_guard.emplace(LoadRequestContextAttachment(
         ctx.get_context_info()->release_request_attachment()));
-    ctx.response_msg(async_simple::coro::syncAwait(
-        batch_get_into_dummy_helper(keys, dummy_buffers, sizes, device_id,
-                                    client_id)));
+    ctx.response_msg(async_simple::coro::syncAwait(batch_get_into_dummy_helper(
+        keys, dummy_buffers, sizes, device_id, client_id)));
 }
 
 void RealClient::batch_put_from_dummy_helper_rpc(
@@ -8477,8 +8475,8 @@ void RealClient::batch_put_from_dummy_helper_rpc(
     std::optional<CurrentCtxScope> ctx_guard;
     ctx_guard.emplace(LoadRequestContextAttachment(
         ctx.get_context_info()->release_request_attachment()));
-    ctx.response_msg(batch_put_from_dummy_helper(
-        keys, dummy_buffers, sizes, config, device_id, client_id));
+    ctx.response_msg(batch_put_from_dummy_helper(keys, dummy_buffers, sizes,
+                                                 config, device_id, client_id));
 }
 
 void RealClient::remove_internal_rpc(
