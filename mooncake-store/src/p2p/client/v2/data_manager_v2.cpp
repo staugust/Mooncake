@@ -223,6 +223,17 @@ tl::expected<DataManagerV2Config, ErrorCode> ParseDataManagerV2Config(
                     node["movement_worker_count"].asUInt64();
             }
         }
+        if (v2.isMember("migration")) {
+            const auto& node = v2["migration"];
+            if (node.isMember("max_inflight_per_route")) {
+                config.migration.max_inflight_per_route =
+                    node["max_inflight_per_route"].asUInt64();
+            }
+            if (node.isMember("max_inflight_per_device")) {
+                config.migration.max_inflight_per_device =
+                    node["max_inflight_per_device"].asUInt64();
+            }
+        }
         if (v2.isMember("movement_tracker")) {
             const auto& node = v2["movement_tracker"];
             if (node.isMember("minimum_residency_ms")) {
