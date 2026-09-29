@@ -137,6 +137,8 @@ struct DataManagerV2Metrics {
     /** Rising means the event queue is saturated: the policy is still correct
      *  but is no longer producing movement commands for those events. */
     uint64_t lifecycle_event_inline_applied = 0;
+    /** Events the bounded event queues had to refuse. */
+    uint64_t events_dropped = 0;
     /** Non-zero means a key is being put and deleted fast enough to starve
      *  its own registration; those Puts failed with INTERNAL_ERROR. */
     uint64_t registration_retry_exhausted = 0;

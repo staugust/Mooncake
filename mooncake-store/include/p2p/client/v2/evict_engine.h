@@ -101,10 +101,15 @@ class EvictEngine {
      *        replica has just gone. DataManagerV2 uses it to stop tracking the
      *        key's access frequency; without it the tracker grows for the
      *        process lifetime and reports keys that no longer exist.
+     * @param on_replica_evicted Invoked, outside every lock, with the tier
+     *        that just lost one replica. It reports every successful eviction,
+     *        including non-final ones; `on_evicted` remains the last-replica
+     *        signal.
      */
     EvictEngine(MultiTiler* tilers, BlockRegistry* registry,
                 MetadataCallbacks* callbacks, std::shared_ptr<Clock> clock,
-                std::function<void(const std::string&)> on_evicted = {});
+                std::function<void(const std::string&)> on_evicted = {},
+                std::function<void(const UUID&)> on_replica_evicted = {});
 
     /**
      * @brief One bounded pass over the coldest candidates on a tiler.
@@ -157,6 +162,7 @@ class EvictEngine {
     MetadataCallbacks* callbacks_ = nullptr;
     std::shared_ptr<Clock> clock_;
     std::function<void(const std::string&)> on_evicted_;
+    std::function<void(const UUID&)> on_replica_evicted_;
 
     mutable std::mutex stats_mu_;
     EvictStats stats_;

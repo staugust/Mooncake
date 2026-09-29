@@ -590,6 +590,11 @@ tl::expected<void, ErrorCode> DataManagerV2::Init() {
             // stops being tracked, or the tracker grows for the process
             // lifetime and reports keys that no longer exist.
             frequency_tracker_->Remove(key);
+        },
+        [this](const UUID& tiler_id) {
+            if (tier_metric_ == nullptr) return;
+            tier_metric_->OnReplicaRemoved(tiler_id);
+            tier_metric_->OnEvicted(tiler_id);
         });
 
     const size_t workers = std::max<size_t>(1, config_.movement_worker_count);
@@ -1783,6 +1788,7 @@ DataManagerV2Metrics DataManagerV2::Metrics() const {
         const EventCenterMetrics events = event_center_->Metrics();
         metrics.lifecycle_event_inline_applied =
             events.lifecycle_event_inline_applied;
+        metrics.events_dropped = events.events_dropped;
     }
     if (migration_engine_) {
         metrics.movement_commands_dropped =
