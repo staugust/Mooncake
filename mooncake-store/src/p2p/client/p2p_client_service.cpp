@@ -20,6 +20,8 @@
 
 #include "utils/scoped_vlog_timer.h"
 
+#include "p2p/client/v2/data_manager_v2.h"
+
 namespace mooncake {
 
 namespace {
@@ -391,6 +393,21 @@ ErrorCode P2PClientService::InitStorage(const P2PClientConfig& config) {
         return data_manager.error();
     }
     data_manager_ = std::move(data_manager.value());
+
+    if (metrics_ && *parsed_version == DataManagerVersion::kV2) {
+        auto* data_manager_v2 =
+            dynamic_cast<v2::DataManagerV2*>(data_manager_.get());
+        if (data_manager_v2 != nullptr) {
+            metrics_->SetV2EventsDroppedProvider(
+                [data_manager_v2]() -> uint64_t {
+                    return data_manager_v2->Metrics().events_dropped;
+                });
+        } else {
+            LOG(WARNING)
+                << "DataManager version is V2 but concrete type is not "
+                   "DataManagerV2; events_dropped summary is unavailable";
+        }
+    }
 
     // Initialize route cache
     if (config.route_cache_max_memory_bytes > 0 &&

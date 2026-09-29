@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <ylt/metric/gauge.hpp>
@@ -333,6 +334,20 @@ struct P2PClientMetric : public ClientMetric {
 
     void serialize(std::string& str) override;
     std::string summary_metrics() override;
+
+    /**
+     * @brief Expose a V2-only counter in the client's summary output.
+     *
+     * The generic P2P metric object does not own the data manager, so V2
+     * installs this callback after creating it. V1 leaves it unset and the
+     * summary omits the V2 section.
+     */
+    void SetV2EventsDroppedProvider(std::function<uint64_t()> provider) {
+        v2_events_dropped_provider_ = std::move(provider);
+    }
+
+   private:
+    std::function<uint64_t()> v2_events_dropped_provider_;
 };
 
 }  // namespace mooncake

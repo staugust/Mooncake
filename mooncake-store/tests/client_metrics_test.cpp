@@ -447,6 +447,19 @@ TEST_F(ClientMetricsTest, P2PClientMetricInheritanceTest) {
     EXPECT_TRUE(summary.find("Put: 50 requests") != std::string::npos);
 }
 
+// Test V2-only counters injected into the P2P client summary output.
+TEST_F(ClientMetricsTest, P2PClientMetricV2EventsDroppedSummaryTest) {
+    P2PClientMetric metrics;
+
+    uint64_t events_dropped = 3;
+    metrics.SetV2EventsDroppedProvider(
+        [&events_dropped]() -> uint64_t { return events_dropped; });
+
+    const std::string summary = metrics.summary_metrics();
+    EXPECT_NE(summary.find("=== P2P Data Manager V2 ==="), std::string::npos);
+    EXPECT_NE(summary.find("events_dropped=3"), std::string::npos);
+}
+
 // Test P2PClientMetric peer_request_metrics (per-RPC peer metrics)
 TEST_F(ClientMetricsTest, P2PClientMetricPeerRequestTest) {
     P2PClientMetric metrics;
