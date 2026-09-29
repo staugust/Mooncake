@@ -358,6 +358,36 @@ TEST(DataManagerFactoryConfigTest, TheTierFileSetsTheStopDrainTimeout) {
     manager.value()->Destroy();
 }
 
+// How long a block must stay on its current tier before it may be moved off
+// is a real operational knob: lowering it lets DRAM drain sooner under write
+// pressure, while raising it avoids migrating blocks that would be evicted
+// before the move repays its cost.
+TEST(DataManagerV2ConfigTest, TheMovementTrackerResidencyIsConfigurable) {
+    auto defaults = Parse(R"({
+  "tiers": [{"type": "DRAM", "capacity": 1048576, "priority": 10}]
+})");
+    ASSERT_TRUE(defaults.has_value()) << toString(defaults.error());
+    EXPECT_EQ(defaults->movement_tracker.minimum_residency,
+              std::chrono::milliseconds(1000));
+
+    auto configured = Parse(R"({
+  "v2": {"movement_tracker": {"minimum_residency_ms": 5000}},
+  "tiers": [{"type": "DRAM", "capacity": 1048576, "priority": 10}]
+})");
+    ASSERT_TRUE(configured.has_value()) << toString(configured.error());
+    EXPECT_EQ(configured->movement_tracker.minimum_residency,
+              std::chrono::milliseconds(5000));
+}
+
+TEST(DataManagerV2ConfigTest, ANegativeMovementTrackerResidencyIsRejected) {
+    auto config = Parse(R"({
+  "v2": {"movement_tracker": {"minimum_residency_ms": -1}},
+  "tiers": [{"type": "DRAM", "capacity": 1048576, "priority": 10}]
+})");
+    ASSERT_FALSE(config.has_value());
+    EXPECT_EQ(config.error(), ErrorCode::INVALID_PARAMS);
+}
+
 // ---------------------------------------------------------------------------
 // The copy layer's own knobs
 // ---------------------------------------------------------------------------

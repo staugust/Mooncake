@@ -223,6 +223,14 @@ tl::expected<DataManagerV2Config, ErrorCode> ParseDataManagerV2Config(
                     node["movement_worker_count"].asUInt64();
             }
         }
+        if (v2.isMember("movement_tracker")) {
+            const auto& node = v2["movement_tracker"];
+            if (node.isMember("minimum_residency_ms")) {
+                config.movement_tracker.minimum_residency =
+                    std::chrono::milliseconds(
+                        node["minimum_residency_ms"].asInt64());
+            }
+        }
         if (v2.isMember("placement_policy")) {
             // The monolithic policy is gone; the JSON block keeps its name and
             // its keys so an existing tier file still means what it meant,
