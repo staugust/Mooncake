@@ -3,6 +3,7 @@
 #include "p2p/client/p2p_client_metric.h"
 
 #include <algorithm>
+#include <sstream>
 #include <utility>
 
 #include <glog/logging.h>
@@ -412,6 +413,24 @@ std::vector<RouteStats> MigrationEngine::Routes() const {
         RouteStats entry;
         entry.route = route;
         entry.label = ToLabel(route);
+
+        if (const TilerManager* source = tilers_->Find(route.source_tiler);
+            source != nullptr) {
+            entry.source_tier_name = MemoryTypeToString(source->GetView().type);
+        }
+        if (const TilerManager* destination =
+                tilers_->Find(route.destination_tiler);
+            destination != nullptr) {
+            entry.destination_tier_name =
+                MemoryTypeToString(destination->GetView().type);
+            if (const TilerManager* source = tilers_->Find(route.source_tiler);
+                source != nullptr) {
+                entry.direction = source->Priority() > destination->Priority()
+                                      ? MovementDirection::kOffload
+                                      : MovementDirection::kOnboard;
+            }
+        }
+
         entry.queued_items = queue.items.size();
         entry.queued_bytes = queue.queued_bytes;
         entry.inflight = queue.inflight;
@@ -422,6 +441,10 @@ std::vector<RouteStats> MigrationEngine::Routes() const {
         }
         stats.push_back(std::move(entry));
     }
+    std::sort(stats.begin(), stats.end(),
+              [](const RouteStats& lhs, const RouteStats& rhs) {
+                  return lhs.label < rhs.label;
+              });
     return stats;
 }
 
@@ -450,8 +473,52 @@ tl::expected<void, ErrorCode> ValidateMigrationSchedulerConfig(
 }
 
 MigrationStats MigrationEngine::Stats() const {
-    std::lock_guard<std::mutex> lock(stats_mu_);
-    return stats_;
+    MigrationStats stats;
+    {
+        std::lock_guard<std::mutex> lock(stats_mu_);
+        stats = stats_;
+    }
+    stats.routes = Routes();
+    return stats;
+}
+
+std::string MigrationEngine::StatsString() const {
+    const MigrationStats stats = Stats();
+    std::ostringstream oss;
+    oss << "migration.executed=" << stats.executed << "\n"
+        << "migration.succeeded=" << stats.succeeded << "\n"
+        << "migration.stale=" << stats.stale << "\n"
+        << "migration.deadline_exceeded=" << stats.deadline_exceeded << "\n"
+        << "migration.submissions_rejected=" << stats.submissions_rejected
+        << "\n";
+
+    size_t offload_queue_items = 0;
+    size_t offload_queue_bytes = 0;
+    size_t onboard_queue_items = 0;
+    size_t onboard_queue_bytes = 0;
+    for (const RouteStats& route : stats.routes) {
+        if (route.direction == MovementDirection::kOffload) {
+            offload_queue_items += route.queued_items;
+            offload_queue_bytes += route.queued_bytes;
+        } else if (route.direction == MovementDirection::kOnboard) {
+            onboard_queue_items += route.queued_items;
+            onboard_queue_bytes += route.queued_bytes;
+        }
+        oss << "migration.route"
+            << " direction=" << ToString(route.direction)
+            << " source=" << route.source_tier_name
+            << " destination=" << route.destination_tier_name
+            << " queued_items=" << route.queued_items
+            << " queued_bytes=" << route.queued_bytes
+            << " inflight=" << route.inflight
+            << " oldest_age_ms=" << route.oldest_age.count()
+            << " label=" << route.label << "\n";
+    }
+    oss << "migration.offload_queued_items=" << offload_queue_items << "\n"
+        << "migration.offload_queued_bytes=" << offload_queue_bytes << "\n"
+        << "migration.onboard_queued_items=" << onboard_queue_items << "\n"
+        << "migration.onboard_queued_bytes=" << onboard_queue_bytes << "\n";
+    return oss.str();
 }
 
 }  // namespace mooncake::v2

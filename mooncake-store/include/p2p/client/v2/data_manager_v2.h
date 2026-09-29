@@ -252,6 +252,12 @@ class DataManagerV2 final : public DataManager, public DataManagerTestHook {
     /** Snapshot of the V2-specific counters. */
     DataManagerV2Metrics Metrics() const;
 
+    /**
+     * Human-readable MigrationEngine snapshot, used by the client's periodic
+     * metric report to expose the offload/onboard funnel and per-route queues.
+     */
+    std::string MigrationStatsString() const;
+
     /** Hot-key snapshots that returned a partial answer because of the cap. */
     uint64_t HotKeyTruncationCount() const;
 

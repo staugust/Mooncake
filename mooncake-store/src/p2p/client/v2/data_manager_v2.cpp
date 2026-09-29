@@ -1801,6 +1801,13 @@ uint64_t DataManagerV2::HotKeyTruncationCount() const {
                               : 0;
 }
 
+std::string DataManagerV2::MigrationStatsString() const {
+    if (migration_engine_ == nullptr) {
+        return "migration_engine=unavailable\n";
+    }
+    return migration_engine_->StatsString();
+}
+
 DataManagerV2Metrics DataManagerV2::Metrics() const {
     DataManagerV2Metrics metrics;
     if (event_center_) {

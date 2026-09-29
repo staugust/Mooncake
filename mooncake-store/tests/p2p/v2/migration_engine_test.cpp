@@ -11,6 +11,7 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -1137,6 +1138,45 @@ TEST_F(MigrationSchedulerTest, RouteStatsAreLabelledByRouteNotByKey) {
     EXPECT_EQ(routes[0].queued_bytes, 4096U);
     EXPECT_EQ(routes[0].label.find("secret-key-name"), std::string::npos)
         << "a key reached a metric label: " << routes[0].label;
+}
+
+// Route stats must also show the direction, not just the tiler pair, because
+// offload and onboard can share the same tier names in a larger topology.
+TEST_F(MigrationSchedulerTest, MigrationStatsExposeDirectionAndTierNames) {
+    ASSERT_TRUE(Submit(StaleRequest("route/offload", 4096,
+                                    MovementPriority::kBackground, fast_->Id(),
+                                    slow_->Id())));
+    ASSERT_TRUE(Submit(StaleRequest("route/onboard", 8192,
+                                    MovementPriority::kBackground, slow_->Id(),
+                                    fast_->Id())));
+
+    const auto stats = engine_->Stats();
+    ASSERT_EQ(stats.routes.size(), 2U);
+    const auto offload = std::find_if(
+        stats.routes.begin(), stats.routes.end(), [](const RouteStats& route) {
+            return route.direction == MovementDirection::kOffload;
+        });
+    const auto onboard = std::find_if(
+        stats.routes.begin(), stats.routes.end(), [](const RouteStats& route) {
+            return route.direction == MovementDirection::kOnboard;
+        });
+    ASSERT_NE(offload, stats.routes.end());
+    ASSERT_NE(onboard, stats.routes.end());
+    EXPECT_EQ(offload->source_tier_name, "DRAM");
+    EXPECT_EQ(offload->destination_tier_name, "NVME");
+    EXPECT_EQ(offload->queued_items, 1U);
+    EXPECT_EQ(offload->queued_bytes, 4096U);
+    EXPECT_EQ(onboard->source_tier_name, "NVME");
+    EXPECT_EQ(onboard->destination_tier_name, "DRAM");
+    EXPECT_EQ(onboard->queued_items, 1U);
+    EXPECT_EQ(onboard->queued_bytes, 8192U);
+
+    const std::string summary = engine_->StatsString();
+    EXPECT_NE(summary.find("migration.onboard_queued_items=1"),
+              std::string::npos);
+    EXPECT_NE(summary.find("migration.offload_queued_items=1"),
+              std::string::npos);
+    EXPECT_NE(summary.find("source=DRAM destination=NVME"), std::string::npos);
 }
 
 }  // namespace mooncake::v2

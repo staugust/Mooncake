@@ -890,6 +890,11 @@ std::string P2PClientMetric::summary_metrics() {
         ss << "events_dropped=" << v2_events_dropped_provider_() << "\n";
     }
 
+    if (v2_migration_stats_provider_) {
+        ss << "=== P2P Data Manager V2 Migration ===\n";
+        ss << v2_migration_stats_provider_();
+    }
+
     return ss.str();
 }
 

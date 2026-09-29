@@ -346,8 +346,20 @@ struct P2PClientMetric : public ClientMetric {
         v2_events_dropped_provider_ = std::move(provider);
     }
 
+    /**
+     * @brief Expose V2 MigrationEngine counters and per-route queue state.
+     *
+     * The generic P2P metric object does not own the data manager, so V2
+     * installs this callback after creating it. V1 leaves it unset and the
+     * summary omits the V2 migration section.
+     */
+    void SetV2MigrationStatsProvider(std::function<std::string()> provider) {
+        v2_migration_stats_provider_ = std::move(provider);
+    }
+
    private:
     std::function<uint64_t()> v2_events_dropped_provider_;
+    std::function<std::string()> v2_migration_stats_provider_;
 };
 
 }  // namespace mooncake

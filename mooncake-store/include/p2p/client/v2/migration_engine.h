@@ -22,6 +22,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -92,6 +93,15 @@ struct RouteStats {
     /** The route itself, so a caller can tell two routes apart. */
     MovementRoute route;
     std::string label;
+    /**
+     * Human-readable tier labels.  The route's raw UUID pair is still enough
+     * to disambiguate two tiers of the same medium, but these names make the
+     * migration summary readable in a running log.
+     */
+    std::string source_tier_name;
+    std::string destination_tier_name;
+    /** Offload or onboard, derived from the source/destination priorities. */
+    MovementDirection direction = MovementDirection::kOffload;
     size_t queued_items = 0;
     size_t queued_bytes = 0;
     /** Age of the oldest queued request. */
@@ -121,6 +131,9 @@ struct MigrationStats {
     uint64_t batches_by_delay = 0;
     /** Retries attempted after a transient failure. */
     uint64_t retries = 0;
+
+    /** Current per-route queue state, used for offload/onboard accounting. */
+    std::vector<RouteStats> routes;
 };
 
 /**
@@ -193,6 +206,7 @@ class MigrationEngine : public MovementSink {
     size_t QueuedCount() const;
 
     MigrationStats Stats() const;
+    std::string StatsString() const;
 
    private:
     MultiTiler* tilers_ = nullptr;
