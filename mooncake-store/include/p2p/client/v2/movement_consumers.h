@@ -50,6 +50,13 @@ struct MovementConsumerConfig {
     double offload_high_watermark = 0.9;
 
     /**
+     * Number of coldest keys proposed when one commit crosses the watermark.
+     * `1` preserves the previous per-event behavior; values above one amortize
+     * offload bursts when many blocks are in the tier.
+     */
+    std::size_t offload_batch_size = 1;
+
+    /**
      * Read heat a block on a slow tier needs before it is worth copying up.
      * 0 disables onboarding. Reads only -- a write is not demand.
      */
@@ -77,8 +84,8 @@ struct MovementConsumerDeps {
 };
 
 /**
- * @brief Offload: a tier that has just grown past its watermark sheds its
- *        coldest block towards a slower neighbour.
+ * @brief Offload: a tier that has just grown past its watermark sheds up to
+ *        the configured number of coldest keys towards a slower neighbour.
  *
  * Subscribes to kCommit only. The committed block is not necessarily the one
  * that moves -- the tier's own eviction ordering picks the victim, because

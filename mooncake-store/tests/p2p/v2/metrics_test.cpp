@@ -304,6 +304,7 @@ TEST_F(V2MetricsTest, EventAndPolicyConfigurationIsReachableFromJson) {
             "migration": {"max_inflight_per_route": 7,
                           "max_inflight_per_device": 11},
             "placement_policy": {"offload_high_watermark": 0.75,
+                                 "offload_batch_size": 5,
                                  "offload_low_watermark": 0.5,
                                  "onboard_min_frequency": 4},
             "max_registration_retry": 3,
@@ -329,6 +330,7 @@ TEST_F(V2MetricsTest, EventAndPolicyConfigurationIsReachableFromJson) {
     // decision actually lives. offload_low_watermark had no reader once
     // offload became one decision per event, so it is accepted and ignored.
     EXPECT_DOUBLE_EQ(config->movement.offload_high_watermark, 0.75);
+    EXPECT_EQ(config->movement.offload_batch_size, 5U);
     EXPECT_DOUBLE_EQ(config->movement.onboard_min_read_heat, 4.0);
     EXPECT_EQ(config->max_registration_retry, 3U);
     EXPECT_EQ(config->stop_drain_timeout, std::chrono::milliseconds(250));
@@ -358,6 +360,15 @@ TEST_F(V2MetricsTest, InvalidEventAndPolicyConfigurationIsRejected) {
                                  LocalTransferConfig{}, KeyLeaseConfig{});
     ASSERT_FALSE(no_headroom.has_value());
     EXPECT_EQ(no_headroom.error(), ErrorCode::INVALID_PARAMS);
+
+    auto zero_batch =
+        ParseDataManagerV2Config(ParseJson(R"({
+        "tiers": [{"type": "DRAM", "capacity": 1048576}],
+        "v2": {"placement_policy": {"offload_batch_size": 0}}
+    })"),
+                                 LocalTransferConfig{}, KeyLeaseConfig{});
+    ASSERT_FALSE(zero_batch.has_value());
+    EXPECT_EQ(zero_batch.error(), ErrorCode::INVALID_PARAMS);
 
     auto zero_timeout =
         ParseDataManagerV2Config(ParseJson(R"({

@@ -251,6 +251,10 @@ tl::expected<DataManagerV2Config, ErrorCode> ParseDataManagerV2Config(
                 config.movement.offload_high_watermark =
                     node["offload_high_watermark"].asDouble();
             }
+            if (node.isMember("offload_batch_size")) {
+                config.movement.offload_batch_size =
+                    node["offload_batch_size"].asUInt64();
+            }
             if (node.isMember("onboard_min_frequency")) {
                 // Reads only now: the old counter was bumped on commit too.
                 config.movement.onboard_min_read_heat =

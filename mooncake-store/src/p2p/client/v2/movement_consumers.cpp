@@ -1,6 +1,7 @@
 #include "p2p/client/v2/movement_consumers.h"
 
 #include <algorithm>
+#include <limits>
 #include <utility>
 
 #include <glog/logging.h>
@@ -119,34 +120,42 @@ class OffloadConsumer final : public EventConsumer {
 
         // The block that arrived is not the one that should leave: what to
         // shed is a property of the tier's contents, and its eviction index is
-        // what orders them. Asking for one victim's worth keeps this a single
-        // decision per event rather than a burst.
-        auto victims = source->Eviction()->SelectVictims(1);
+        // what orders them. The batch size is explicit rather than derived from
+        // a byte estimate because the caller wants a fixed number of candidate
+        // keys, not an approximate amount of data.
+        auto victims = source->Eviction()->SelectVictims(
+            std::numeric_limits<size_t>::max(), config_.offload_batch_size);
         if (victims.empty()) return ConsumeResult::kIgnored;
-        const BlockToken& victim = victims.front();
 
-        auto registration = victim.registration.Lock();
-        if (!registration.has_value() || registration->IsRetired()) {
-            return ConsumeResult::kIgnored;
+        ConsumeResult result = ConsumeResult::kIgnored;
+        for (const auto& victim : victims) {
+            auto registration = victim.registration.Lock();
+            if (!registration.has_value() || registration->IsRetired()) {
+                continue;
+            }
+            if (!deps_.registry->IsCanonical(*registration)) {
+                continue;
+            }
+
+            const FrequencySnapshot heat =
+                deps_.frequency->Get(registration->Id(), victim.key);
+            BlockEvent subject = event;
+            subject.key = victim.key;
+            subject.size_bytes = victim.size_bytes;
+
+            const PlacementContext context = MakeContext(
+                deps_, victim.key, event.tiler_id, MovementDirection::kOffload,
+                victim.size_bytes, heat.read_heat, *registration);
+            auto decision = deps_.placement->Select(context);
+            if (!decision.has_value()) continue;
+
+            if (Propose(deps_, config_, *decision, subject, *registration,
+                        victim.block_id, MovementDirection::kOffload) ==
+                ConsumeResult::kCommandEnqueued) {
+                result = ConsumeResult::kCommandEnqueued;
+            }
         }
-        if (!deps_.registry->IsCanonical(*registration)) {
-            return ConsumeResult::kIgnored;
-        }
-
-        const FrequencySnapshot heat =
-            deps_.frequency->Get(registration->Id(), victim.key);
-        BlockEvent subject = event;
-        subject.key = victim.key;
-        subject.size_bytes = victim.size_bytes;
-
-        const PlacementContext context = MakeContext(
-            deps_, victim.key, event.tiler_id, MovementDirection::kOffload,
-            victim.size_bytes, heat.read_heat, *registration);
-        auto decision = deps_.placement->Select(context);
-        if (!decision.has_value()) return ConsumeResult::kIgnored;
-
-        return Propose(deps_, config_, *decision, subject, *registration,
-                       victim.block_id, MovementDirection::kOffload);
+        return result;
     }
 
    private:
@@ -233,6 +242,10 @@ tl::expected<void, ErrorCode> ValidateMovementConsumerConfig(
                    << config.offload_high_watermark
                    << "; offload has to start before the tier is full or it "
                       "cannot keep ahead of reclamation";
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+    }
+    if (config.offload_batch_size == 0) {
+        LOG(ERROR) << "movement.offload_batch_size must be greater than zero";
         return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
     }
     if (config.onboard_min_read_heat < 0.0) {

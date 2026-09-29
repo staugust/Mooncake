@@ -362,6 +362,32 @@ TEST_F(MovementConsumersTest, ACommitAboveTheWatermarkOffloadsOneBlockDown) {
     ASSERT_TRUE(requests[0].deadline.has_value());
 }
 
+// Offload is still triggered by a single commit. The configurable batch says
+// how many cold keys that trigger may propose, which is what a tier with many
+// equal-sized keys needs when the event rate itself is the bottleneck.
+TEST_F(MovementConsumersTest, AnOffloadBatchProposesMultipleColdestKeys) {
+    MovementConsumerConfig config;
+    config.offload_high_watermark = 0.5;
+    config.offload_batch_size = 3;
+    Build(config);
+
+    FillFastTier(5);  // 5/8 of the fast tier, past the 0.5 watermark
+    ImmutableBlock block = Commit(*fast_, "trigger", 0x22);
+    ASSERT_TRUE(static_cast<bool>(block));
+
+    EXPECT_EQ(offload_->Consume(CommitEvent(*fast_, "trigger", block),
+                                DeliveryMode::kQueued),
+              ConsumeResult::kCommandEnqueued);
+    const auto requests = commands_->Requests();
+    ASSERT_EQ(requests.size(), 3U) << "the configured batch was not enforced";
+    for (const auto& request : requests) {
+        EXPECT_EQ(request.kind, MovementKind::kMigrate);
+        EXPECT_EQ(request.source_tiler, fast_->Id());
+        EXPECT_EQ(request.destination_tiler, slow_->Id());
+        EXPECT_NE(request.key, "trigger");
+    }
+}
+
 // The block that arrived is not necessarily the one that leaves: what to shed
 // is a property of the tier's contents.
 TEST_F(MovementConsumersTest, TheVictimComesFromTheTiersOwnOrdering) {
@@ -560,6 +586,10 @@ TEST_F(MovementConsumersTest, ConfigValidationRejectsUnusableValues) {
     MovementConsumerConfig no_deadline;
     no_deadline.movement_deadline = 0ms;
     EXPECT_FALSE(ValidateMovementConsumerConfig(no_deadline).has_value());
+
+    MovementConsumerConfig zero_batch;
+    zero_batch.offload_batch_size = 0;
+    EXPECT_FALSE(ValidateMovementConsumerConfig(zero_batch).has_value());
 }
 
 TEST_F(MovementConsumersTest, MissingDependenciesAreRejected) {
