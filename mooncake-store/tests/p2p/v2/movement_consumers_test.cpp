@@ -18,6 +18,7 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "p2p/client/v2/block_pool.h"
@@ -188,19 +189,20 @@ class MovementConsumersTest : public ::testing::Test {
     }
 
     void Build(const MovementConsumerConfig& config) {
-        MovementConsumerDeps deps;
-        deps.tilers = &tilers_;
-        deps.registry = &registry_;
-        deps.placement = placement_.get();
-        deps.frequency = frequency_.get();
-        deps.movement = movement_.get();
-        deps.sink = commands_.get();
-        deps.clock = clock_;
+        config_ = config;
 
-        auto offload = CreateOffloadConsumer(config, deps);
+        deps_.tilers = &tilers_;
+        deps_.registry = &registry_;
+        deps_.placement = placement_.get();
+        deps_.frequency = frequency_.get();
+        deps_.movement = movement_.get();
+        deps_.sink = commands_.get();
+        deps_.clock = clock_;
+
+        auto offload = CreateOffloadConsumer(config_, deps_);
         CHECK(offload.has_value()) << toString(offload.error());
         offload_ = std::move(offload.value());
-        auto onboard = CreateOnboardConsumer(config, deps);
+        auto onboard = CreateOnboardConsumer(config_, deps_);
         CHECK(onboard.has_value()) << toString(onboard.error());
         onboard_ = std::move(onboard.value());
     }
@@ -309,6 +311,8 @@ class MovementConsumersTest : public ::testing::Test {
     std::shared_ptr<FrequencyTracker> frequency_;
     std::unique_ptr<MovementTracker> movement_;
     std::shared_ptr<RecordingSink> commands_;
+    MovementConsumerConfig config_;
+    MovementConsumerDeps deps_;
     std::unique_ptr<EventConsumer> offload_;
     std::unique_ptr<EventConsumer> onboard_;
 };
@@ -390,6 +394,37 @@ TEST_F(MovementConsumersTest, AnOffloadBatchProposesMultipleColdestKeys) {
 
 // The block that arrived is not necessarily the one that leaves: what to shed
 // is a property of the tier's contents.
+TEST_F(MovementConsumersTest, DirectOffloadScanPartitionsVictimsAcrossLanes) {
+    MovementConsumerConfig config;
+    config.offload_high_watermark = 0.5;
+    config.offload_batch_size = 2;
+    config.offload_scan_thread_count = 2;
+    config.offload_scan_interval = 10ms;
+    Build(config);
+
+    FillFastTier(5);
+    ImmutableBlock block = Commit(*fast_, "trigger", 0x22);
+    ASSERT_TRUE(static_cast<bool>(block));
+
+    EXPECT_EQ(OffloadFromTiler(config_, deps_, fast_->Id(),
+                               /*lane_count=*/2, /*lane_index=*/0),
+              ConsumeResult::kCommandEnqueued);
+    EXPECT_EQ(OffloadFromTiler(config_, deps_, fast_->Id(),
+                               /*lane_count=*/2, /*lane_index=*/1),
+              ConsumeResult::kCommandEnqueued);
+
+    const auto requests = commands_->Requests();
+    ASSERT_EQ(requests.size(), 4U)
+        << "two scanner lanes each must take their own two-key lane";
+    std::unordered_set<std::string> keys;
+    for (const auto& request : requests) {
+        EXPECT_EQ(request.source_tiler, fast_->Id());
+        EXPECT_EQ(request.destination_tiler, slow_->Id());
+        keys.insert(request.key);
+    }
+    EXPECT_EQ(keys.size(), 4U) << "lanes must be disjoint";
+}
+
 TEST_F(MovementConsumersTest, TheVictimComesFromTheTiersOwnOrdering) {
     FillFastTier(5);
     ImmutableBlock block = Commit(*fast_, "trigger", 0x22);

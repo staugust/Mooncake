@@ -91,6 +91,78 @@ ConsumeResult Propose(const MovementConsumerDeps& deps,
 }
 
 /**
+ * @brief Scan one source tiler for up to offload_batch_size cold victims.
+ *
+ * This is the shared scanner core used by both the event consumer and the
+ * dedicated offload threads; the source tiler is the only input necessary,
+ * because victim selection is a property of that tiler, not of the commit
+ * event that may have noticed it.
+ */
+ConsumeResult OffloadFromTilerImpl(const MovementConsumerConfig& config,
+                                   const MovementConsumerDeps& deps,
+                                   const UUID& tiler_id, size_t lane_count,
+                                   size_t lane_index) {
+    TilerManager* source = deps.tilers->Find(tiler_id);
+    if (source == nullptr) return ConsumeResult::kIgnored;
+    if (UsageRatioOf(*source) < config.offload_high_watermark) {
+        return ConsumeResult::kIgnored;
+    }
+
+    if (lane_count == 0 || lane_index >= lane_count) {
+        return ConsumeResult::kIgnored;
+    }
+
+    // For a single lane this is the event-driven batch. For a scanner pool it
+    // is the pool-sized candidate set, which the pool then partitions into
+    // disjoint lanes. That avoids N scanners all contending on the same first
+    // victim and turning a thread pool into a retry storm.
+    size_t max_keys = config.offload_batch_size;
+    if (lane_count > 1 && config.offload_batch_size >
+                              std::numeric_limits<size_t>::max() / lane_count) {
+        return ConsumeResult::kIgnored;
+    }
+    if (lane_count > 1) max_keys *= lane_count;
+
+    auto victims = source->Eviction()->SelectVictims(
+        std::numeric_limits<size_t>::max(), max_keys);
+    if (victims.empty()) return ConsumeResult::kIgnored;
+
+    ConsumeResult result = ConsumeResult::kIgnored;
+    size_t candidate_index = 0;
+    for (const auto& victim : victims) {
+        const bool mine =
+            lane_count == 1 || candidate_index % lane_count == lane_index;
+        ++candidate_index;
+        if (!mine) continue;
+        auto registration = victim.registration.Lock();
+        if (!registration.has_value() || registration->IsRetired()) continue;
+        if (!deps.registry->IsCanonical(*registration)) continue;
+
+        const FrequencySnapshot heat =
+            deps.frequency->Get(registration->Id(), victim.key);
+
+        BlockEvent subject;
+        subject.type = EventType::kCommit;
+        subject.key = victim.key;
+        subject.tiler_id = tiler_id;
+        subject.size_bytes = victim.size_bytes;
+
+        const PlacementContext context =
+            MakeContext(deps, victim.key, tiler_id, MovementDirection::kOffload,
+                        victim.size_bytes, heat.read_heat, *registration);
+        auto decision = deps.placement->Select(context);
+        if (!decision.has_value()) continue;
+
+        if (Propose(deps, config, *decision, subject, *registration,
+                    victim.block_id, MovementDirection::kOffload) ==
+            ConsumeResult::kCommandEnqueued) {
+            result = ConsumeResult::kCommandEnqueued;
+        }
+    }
+    return result;
+}
+
+/**
  * @class OffloadConsumer
  */
 class OffloadConsumer final : public EventConsumer {
@@ -111,51 +183,8 @@ class OffloadConsumer final : public EventConsumer {
         // decision costs a delayed copy, while making it here would put a
         // queue push into the write path.
         if (mode == DeliveryMode::kInline) return ConsumeResult::kApplied;
-
-        TilerManager* source = deps_.tilers->Find(event.tiler_id);
-        if (source == nullptr) return ConsumeResult::kIgnored;
-        if (UsageRatioOf(*source) < config_.offload_high_watermark) {
-            return ConsumeResult::kIgnored;
-        }
-
-        // The block that arrived is not the one that should leave: what to
-        // shed is a property of the tier's contents, and its eviction index is
-        // what orders them. The batch size is explicit rather than derived from
-        // a byte estimate because the caller wants a fixed number of candidate
-        // keys, not an approximate amount of data.
-        auto victims = source->Eviction()->SelectVictims(
-            std::numeric_limits<size_t>::max(), config_.offload_batch_size);
-        if (victims.empty()) return ConsumeResult::kIgnored;
-
-        ConsumeResult result = ConsumeResult::kIgnored;
-        for (const auto& victim : victims) {
-            auto registration = victim.registration.Lock();
-            if (!registration.has_value() || registration->IsRetired()) {
-                continue;
-            }
-            if (!deps_.registry->IsCanonical(*registration)) {
-                continue;
-            }
-
-            const FrequencySnapshot heat =
-                deps_.frequency->Get(registration->Id(), victim.key);
-            BlockEvent subject = event;
-            subject.key = victim.key;
-            subject.size_bytes = victim.size_bytes;
-
-            const PlacementContext context = MakeContext(
-                deps_, victim.key, event.tiler_id, MovementDirection::kOffload,
-                victim.size_bytes, heat.read_heat, *registration);
-            auto decision = deps_.placement->Select(context);
-            if (!decision.has_value()) continue;
-
-            if (Propose(deps_, config_, *decision, subject, *registration,
-                        victim.block_id, MovementDirection::kOffload) ==
-                ConsumeResult::kCommandEnqueued) {
-                result = ConsumeResult::kCommandEnqueued;
-            }
-        }
-        return result;
+        return OffloadFromTilerImpl(config_, deps_, event.tiler_id,
+                                    /*lane_count=*/1, /*lane_index=*/0);
     }
 
    private:
@@ -248,6 +277,11 @@ tl::expected<void, ErrorCode> ValidateMovementConsumerConfig(
         LOG(ERROR) << "movement.offload_batch_size must be greater than zero";
         return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
     }
+    if (config.offload_scan_interval <= std::chrono::milliseconds(0)) {
+        LOG(ERROR) << "movement.offload_scan_interval_ms must be greater "
+                      "than zero when offload scan threads are enabled";
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+    }
     if (config.onboard_min_read_heat < 0.0) {
         LOG(ERROR) << "movement.onboard_min_read_heat must not be negative";
         return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
@@ -276,6 +310,13 @@ tl::expected<std::unique_ptr<EventConsumer>, ErrorCode> CreateOnboardConsumer(
     auto deps_valid = ValidateDeps(deps);
     if (!deps_valid) return tl::make_unexpected(deps_valid.error());
     return std::make_unique<OnboardConsumer>(config, deps);
+}
+
+ConsumeResult OffloadFromTiler(const MovementConsumerConfig& config,
+                               const MovementConsumerDeps& deps,
+                               const UUID& tiler_id, size_t lane_count,
+                               size_t lane_index) {
+    return OffloadFromTilerImpl(config, deps, tiler_id, lane_count, lane_index);
 }
 
 }  // namespace mooncake::v2

@@ -20,6 +20,7 @@
 // most one decision per fact. Neither blocks: they look things up, decide, and
 // hand a command to the sink.
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -55,6 +56,20 @@ struct MovementConsumerConfig {
      * offload bursts when many blocks are in the tier.
      */
     std::size_t offload_batch_size = 1;
+
+    /**
+     * Number of background threads that scan high-usage tilers and propose
+     * offload work. Zero keeps the event-driven path unchanged; values above
+     * zero add a dedicated scanner pool that runs independently of commit
+     * events.
+     */
+    std::size_t offload_scan_thread_count = 0;
+
+    /**
+     * Sleep window used by each offload scanner thread. Must be positive
+     * when scanner threads are enabled.
+     */
+    std::chrono::milliseconds offload_scan_interval{100};
 
     /**
      * Read heat a block on a slow tier needs before it is worth copying up.
@@ -105,5 +120,17 @@ tl::expected<std::unique_ptr<EventConsumer>, ErrorCode> CreateOffloadConsumer(
  */
 tl::expected<std::unique_ptr<EventConsumer>, ErrorCode> CreateOnboardConsumer(
     const MovementConsumerConfig& config, const MovementConsumerDeps& deps);
+
+/**
+ * @brief Scan one tiler for offload candidates, independent of a trigger.
+ *
+ * The live EventCenter consumer still does this event-driven path; this
+ * exported entry point lets DataManagerV2 run it from a dedicated scanner
+ * pool as well.
+ */
+ConsumeResult OffloadFromTiler(const MovementConsumerConfig& config,
+                               const MovementConsumerDeps& deps,
+                               const UUID& tiler_id, size_t lane_count = 1,
+                               size_t lane_index = 0);
 
 }  // namespace mooncake::v2

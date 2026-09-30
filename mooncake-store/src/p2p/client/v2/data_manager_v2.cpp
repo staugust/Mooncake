@@ -255,6 +255,15 @@ tl::expected<DataManagerV2Config, ErrorCode> ParseDataManagerV2Config(
                 config.movement.offload_batch_size =
                     node["offload_batch_size"].asUInt64();
             }
+            if (node.isMember("offload_scan_thread_count")) {
+                config.movement.offload_scan_thread_count =
+                    node["offload_scan_thread_count"].asUInt64();
+            }
+            if (node.isMember("offload_scan_interval_ms")) {
+                config.movement.offload_scan_interval =
+                    std::chrono::milliseconds(
+                        node["offload_scan_interval_ms"].asInt64());
+            }
             if (node.isMember("onboard_min_frequency")) {
                 // Reads only now: the old counter was bumped on commit too.
                 config.movement.onboard_min_read_heat =
@@ -577,19 +586,18 @@ tl::expected<void, ErrorCode> DataManagerV2::Init() {
 
     event_center_ = std::make_shared<EventCenter>(config_.events);
 
-    MovementConsumerDeps deps;
-    deps.tilers = &tilers_;
-    deps.registry = &block_registry_;
-    deps.placement = tier_placement_.get();
-    deps.frequency = frequency_tracker_.get();
-    deps.movement = movement_tracker_.get();
-    deps.sink = migration_engine_.get();
-    deps.clock = clock_;
+    offload_deps_.tilers = &tilers_;
+    offload_deps_.registry = &block_registry_;
+    offload_deps_.placement = tier_placement_.get();
+    offload_deps_.frequency = frequency_tracker_.get();
+    offload_deps_.movement = movement_tracker_.get();
+    offload_deps_.sink = migration_engine_.get();
+    offload_deps_.clock = clock_;
 
-    auto offload = CreateOffloadConsumer(config_.movement, deps);
+    auto offload = CreateOffloadConsumer(config_.movement, offload_deps_);
     if (!offload) return tl::make_unexpected(offload.error());
     offload_consumer_ = std::move(offload.value());
-    auto onboard = CreateOnboardConsumer(config_.movement, deps);
+    auto onboard = CreateOnboardConsumer(config_.movement, offload_deps_);
     if (!onboard) return tl::make_unexpected(onboard.error());
     onboard_consumer_ = std::move(onboard.value());
 
@@ -626,6 +634,16 @@ tl::expected<void, ErrorCode> DataManagerV2::Init() {
         movement_workers_.emplace_back([this] { MovementWorkerMain(); });
     }
 
+    const size_t scan_threads = config_.movement.offload_scan_thread_count;
+    if (scan_threads > 0) {
+        offload_scan_stop_.store(false, std::memory_order_release);
+        offload_scan_workers_.reserve(scan_threads);
+        for (size_t i = 0; i < scan_threads; ++i) {
+            offload_scan_workers_.emplace_back(
+                [this, i] { OffloadScanWorkerMain(i); });
+        }
+    }
+
     if (tier_metric_) {
         for (const auto& tiler : tilers_.by_priority) {
             const TierView view = tiler->GetView();
@@ -644,7 +662,9 @@ tl::expected<void, ErrorCode> DataManagerV2::Init() {
     LOG(INFO) << "DataManagerV2 initialized with " << tilers_.Size()
               << " logical tilers, registry_shards="
               << block_registry_.ShardCount()
-              << ", index_shards=" << config_.block_index.shard_count;
+              << ", index_shards=" << config_.block_index.shard_count
+              << ", offload_scan_threads="
+              << config_.movement.offload_scan_thread_count;
     return {};
 }
 
@@ -963,6 +983,30 @@ void DataManagerV2::MovementWorkerMain() {
     // RunOnce returns 0 only once the engine has stopped, so this is the
     // whole loop.
     while (migration_engine_->RunOnce() > 0) {
+    }
+}
+
+void DataManagerV2::OffloadScanWorkerMain(size_t thread_index) {
+    LOG(INFO) << "Offload scan thread " << thread_index
+              << " started, interval_ms="
+              << config_.movement.offload_scan_interval.count();
+    for (;;) {
+        std::unique_lock<std::mutex> lock(offload_scan_mu_);
+        const bool stopped = offload_scan_cv_.wait_for(
+            lock, config_.movement.offload_scan_interval, [this] {
+                return offload_scan_stop_.load(std::memory_order_acquire);
+            });
+        if (stopped || offload_scan_stop_.load(std::memory_order_acquire)) {
+            return;
+        }
+        lock.unlock();
+
+        for (const auto& tiler : tilers_.by_priority) {
+            if (offload_scan_stop_.load(std::memory_order_acquire)) return;
+            OffloadFromTiler(config_.movement, offload_deps_, tiler->Id(),
+                             config_.movement.offload_scan_thread_count,
+                             thread_index);
+        }
     }
 }
 
@@ -1866,6 +1910,15 @@ void DataManagerV2::Stop() {
     // Before the pools: an outstanding wait completes its promise here, so no
     // awaiter is left hanging by the shutdown.
     if (transfer_coordinator_) transfer_coordinator_->Stop();
+
+    // The offload scanners first: they produce commands, so they must be
+    // quiesced before the EventCenter and movement engine stop draining them.
+    offload_scan_stop_.store(true, std::memory_order_release);
+    offload_scan_cv_.notify_all();
+    for (auto& worker : offload_scan_workers_) {
+        if (worker.joinable()) worker.join();
+    }
+    offload_scan_workers_.clear();
 
     // The event center first, so no new command can be proposed; then the
     // migration engine, which is what makes RunOnce() return zero and lets the

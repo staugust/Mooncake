@@ -20,8 +20,10 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -350,6 +352,9 @@ class DataManagerV2 final : public DataManager, public DataManagerTestHook {
     /** Consumes the movement queue until the EventCenter closes it. */
     void MovementWorkerMain();
 
+    /** Periodically walks high-usage tilers and proposes offload commands. */
+    void OffloadScanWorkerMain(size_t thread_index);
+
     /** Remember that rectify just asked Master to drop `key`. */
     void NoteRectifyWitness(std::string_view key) const;
     /** Count a commit of a key rectify recently dropped as a false positive. */
@@ -424,6 +429,14 @@ class DataManagerV2 final : public DataManager, public DataManagerTestHook {
     std::unique_ptr<MigrationEngine> migration_engine_;
     std::unique_ptr<EvictEngine> evict_engine_;
     std::vector<std::thread> movement_workers_;
+
+    // Dedicated offload scanners. They stop before the components above are
+    // torn down, so the explicit Stop path is the one that matters.
+    MovementConsumerDeps offload_deps_;
+    std::atomic<bool> offload_scan_stop_{false};
+    std::mutex offload_scan_mu_;
+    std::condition_variable offload_scan_cv_;
+    std::vector<std::thread> offload_scan_workers_;
 };
 
 }  // namespace mooncake::v2
