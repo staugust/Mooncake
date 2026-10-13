@@ -593,6 +593,7 @@ tl::expected<void, ErrorCode> DataManagerV2::Init() {
     offload_deps_.movement = movement_tracker_.get();
     offload_deps_.sink = migration_engine_.get();
     offload_deps_.clock = clock_;
+    offload_deps_.scan_stats = &offload_scan_stats_;
 
     auto offload = CreateOffloadConsumer(config_.movement, offload_deps_);
     if (!offload) return tl::make_unexpected(offload.error());
@@ -1854,6 +1855,10 @@ std::string DataManagerV2::MigrationStatsString() const {
         return "migration_engine=unavailable\n";
     }
     return migration_engine_->StatsString();
+}
+
+std::string DataManagerV2::OffloadScanStatsString() const {
+    return offload_scan_stats_.Serialize();
 }
 
 DataManagerV2Metrics DataManagerV2::Metrics() const {

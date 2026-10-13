@@ -260,6 +260,9 @@ class DataManagerV2 final : public DataManager, public DataManagerTestHook {
      */
     std::string MigrationStatsString() const;
 
+    /** Prometheus text for the V2 offload scan decision funnel. */
+    std::string OffloadScanStatsString() const;
+
     /** Hot-key snapshots that returned a partial answer because of the cap. */
     uint64_t HotKeyTruncationCount() const;
 
@@ -433,6 +436,7 @@ class DataManagerV2 final : public DataManager, public DataManagerTestHook {
     // Dedicated offload scanners. They stop before the components above are
     // torn down, so the explicit Stop path is the one that matters.
     MovementConsumerDeps offload_deps_;
+    OffloadScanStats offload_scan_stats_;
     std::atomic<bool> offload_scan_stop_{false};
     std::mutex offload_scan_mu_;
     std::condition_variable offload_scan_cv_;

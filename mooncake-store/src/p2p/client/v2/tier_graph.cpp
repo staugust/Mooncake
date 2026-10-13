@@ -6,6 +6,14 @@
 #include <glog/logging.h>
 
 namespace mooncake::v2 {
+
+PlacementRejection PlacementRejection::ReasonOnly(
+    PlacementRejectionReason reason) {
+    PlacementRejection rejection;
+    rejection.reason = reason;
+    return rejection;
+}
+
 namespace {
 
 /**
@@ -298,26 +306,58 @@ class NearestNeighbourPolicy final : public TierPlacementPolicy {
     std::optional<PlacementDecision> Select(
         const PlacementContext& context) const override {
         const TierNode* source = graph_->Node(context.source_tiler);
-        if (source == nullptr) return std::nullopt;
+        if (source == nullptr) {
+            Reject(context,
+                   PlacementRejection::ReasonOnly(
+                       PlacementRejectionReason::kSourceMissing),
+                   std::nullopt);
+            return std::nullopt;
+        }
 
         const bool offload = context.direction == MovementDirection::kOffload;
         const std::vector<const TierNode*> candidates =
             offload ? graph_->SlowerNeighbours(context.source_tiler)
                     : graph_->FasterNeighbours(context.source_tiler);
 
+        if (candidates.empty()) {
+            Reject(context,
+                   PlacementRejection::ReasonOnly(
+                       PlacementRejectionReason::kNoDestination),
+                   std::nullopt);
+            return std::nullopt;
+        }
+
         for (const TierNode* candidate : candidates) {
             // Checked before the callbacks, which reach into the destination
             // BlockIndex and the tier accounting: there is no point asking
             // about a candidate the direction has already ruled out.
-            if (!offload && !candidate->addressable) continue;
-            if (!Admits(context, candidate->tiler_id)) continue;
+            if (!offload && !candidate->addressable) {
+                Reject(
+                    context,
+                    PlacementRejection::ReasonOnly(
+                        PlacementRejectionReason::kDestinationNotAddressable),
+                    candidate->tiler_id);
+                continue;
+            }
+            auto admission_rejection =
+                AdmissionRejection(context, candidate->tiler_id);
+            if (admission_rejection.has_value()) {
+                Reject(context, *admission_rejection, candidate->tiler_id);
+                continue;
+            }
             // The neighbour lists are derived from the edges, so this can
             // only miss if the two ever disagree. Asking anyway keeps the
             // target, the route it travels on and the copy requirements
             // below on one and the same declared edge.
             const TierEdge* edge =
                 graph_->Edge(source->tiler_id, candidate->tiler_id);
-            if (edge == nullptr) continue;
+            if (edge == nullptr) {
+                Reject(context,
+                       PlacementRejection::ReasonOnly(
+                           PlacementRejectionReason::kMissingEdge),
+                       candidate->tiler_id);
+                continue;
+            }
 
             PlacementDecision decision;
             decision.destination_tiler = candidate->tiler_id;
@@ -341,6 +381,10 @@ class NearestNeighbourPolicy final : public TierPlacementPolicy {
         // Nowhere legal and useful to go. Not an error: the bottom tier of
         // every deployment reaches this, and so does a key the destination
         // already holds. The caller leaves the block where it is.
+        Reject(context,
+               PlacementRejection::ReasonOnly(
+                   PlacementRejectionReason::kNoAdmission),
+               std::nullopt);
         return std::nullopt;
     }
 
@@ -354,23 +398,35 @@ class NearestNeighbourPolicy final : public TierPlacementPolicy {
                                             : MovementKind::kMigrate;
     }
 
-    bool Admits(const PlacementContext& context, const UUID& candidate) const {
+    static void Reject(const PlacementContext& context,
+                       const PlacementRejection& rejection,
+                       const std::optional<UUID>& destination) {
+        if (!context.on_reject) return;
+        PlacementRejection recorded = rejection;
+        recorded.destination_tiler = destination;
+        context.on_reject(recorded);
+    }
+
+    std::optional<PlacementRejection> AdmissionRejection(
+        const PlacementContext& context, const UUID& candidate) const {
         // A tier already at the limit is itself about to reclaim; feeding it
         // turns one tier's pressure into two tiers' pressure.
         if (context.usage_ratio &&
             context.usage_ratio(candidate) >= config_.max_destination_usage) {
-            return false;
+            return PlacementRejection::ReasonOnly(
+                PlacementRejectionReason::kDestinationOverLimit);
         }
         // Only the destination BlockIndex can answer this, and the caller has
         // just asked it. Copying a block onto a tier that already holds it
         // spends the bandwidth a real movement is waiting for.
         if (context.already_present && context.already_present(candidate)) {
-            return false;
+            return PlacementRejection::ReasonOnly(
+                PlacementRejectionReason::kAlreadyPresent);
         }
         // An absent callback is the caller asserting there is no such
         // constraint, not an unknown: the policy has no way to find out and
         // must not invent a refresh loop to try.
-        return true;
+        return std::nullopt;
     }
 
     const TierPlacementPolicyConfig config_;

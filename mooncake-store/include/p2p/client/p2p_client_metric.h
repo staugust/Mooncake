@@ -357,9 +357,20 @@ struct P2PClientMetric : public ClientMetric {
         v2_migration_stats_provider_ = std::move(provider);
     }
 
+    /**
+     * @brief Expose V2 offload scan outcome counters as Prometheus text.
+     *
+     * The provider returns a complete HELP/TYPE/metric block, which is valid
+     * to append to both scrape output and the human-readable summary.
+     */
+    void SetV2OffloadScanStatsProvider(std::function<std::string()> provider) {
+        v2_offload_scan_stats_provider_ = std::move(provider);
+    }
+
    private:
     std::function<uint64_t()> v2_events_dropped_provider_;
     std::function<std::string()> v2_migration_stats_provider_;
+    std::function<std::string()> v2_offload_scan_stats_provider_;
 };
 
 }  // namespace mooncake

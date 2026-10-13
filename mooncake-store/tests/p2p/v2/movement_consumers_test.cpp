@@ -90,6 +90,14 @@ class AcceptingSink final : public EventSink {
     }
 };
 
+class RejectingMovementSink final : public MovementSink {
+   public:
+    bool Enqueue(MovementRequest, MovementLease lease) override {
+        lease.Settle(/*moved=*/false);
+        return false;
+    }
+};
+
 std::vector<uint8_t> Pattern(size_t size, uint8_t seed) {
     std::vector<uint8_t> out(size);
     for (size_t i = 0; i < size; ++i) {
@@ -198,6 +206,8 @@ class MovementConsumersTest : public ::testing::Test {
         deps_.movement = movement_.get();
         deps_.sink = commands_.get();
         deps_.clock = clock_;
+        scan_stats_ = std::make_unique<OffloadScanStats>();
+        deps_.scan_stats = scan_stats_.get();
 
         auto offload = CreateOffloadConsumer(config_, deps_);
         CHECK(offload.has_value()) << toString(offload.error());
@@ -313,6 +323,7 @@ class MovementConsumersTest : public ::testing::Test {
     std::shared_ptr<RecordingSink> commands_;
     MovementConsumerConfig config_;
     MovementConsumerDeps deps_;
+    std::unique_ptr<OffloadScanStats> scan_stats_;
     std::unique_ptr<EventConsumer> offload_;
     std::unique_ptr<EventConsumer> onboard_;
 };
@@ -346,6 +357,131 @@ TEST_F(MovementConsumersTest, ACommitBelowTheWatermarkMovesNothing) {
                                 DeliveryMode::kQueued),
               ConsumeResult::kIgnored);
     EXPECT_EQ(commands_->Count(), 0U);
+}
+
+TEST_F(MovementConsumersTest, OffloadScanRecordsBelowWatermark) {
+    ImmutableBlock block = Commit(*fast_, "cold", 0x11);
+    ASSERT_TRUE(static_cast<bool>(block));
+
+    EXPECT_EQ(OffloadFromTiler(config_, deps_, fast_->Id()),
+              ConsumeResult::kIgnored);
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), std::nullopt,
+                                 OffloadScanOutcome::kScanPasses),
+              1U);
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), std::nullopt,
+                                 OffloadScanOutcome::kScanBelowWatermark),
+              1U);
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), std::nullopt,
+                                 OffloadScanOutcome::kScanNoCandidates),
+              0U);
+}
+
+TEST_F(MovementConsumersTest, OffloadScanRecordsNoDestination) {
+    MovementConsumerConfig config;
+    config.offload_high_watermark = 0.0001;
+    Build(config);
+
+    ImmutableBlock block = Commit(*slow_, "bottom", 0x33);
+    ASSERT_TRUE(static_cast<bool>(block));
+
+    EXPECT_EQ(OffloadFromTiler(config_, deps_, slow_->Id()),
+              ConsumeResult::kIgnored);
+    EXPECT_EQ(scan_stats_->Value(slow_->Id(), std::nullopt,
+                                 OffloadScanOutcome::kScanCandidatesSelected),
+              1U);
+    EXPECT_EQ(scan_stats_->Value(slow_->Id(), std::nullopt,
+                                 OffloadScanOutcome::kScanCandidateExamined),
+              1U);
+    EXPECT_EQ(scan_stats_->Value(slow_->Id(), std::nullopt,
+                                 OffloadScanOutcome::kPlacementNoDestination),
+              1U);
+}
+
+TEST_F(MovementConsumersTest, OffloadScanRecordsDestinationAlreadyPresent) {
+    MovementConsumerConfig config;
+    config.offload_high_watermark = 0.0001;
+    Build(config);
+
+    const std::vector<uint8_t> payload = Pattern(kBlockSize, 0x88);
+    ImmutableBlock block = Commit(*fast_, "both", 0x88);
+    ASSERT_TRUE(static_cast<bool>(block));
+    auto handle = registry_.Match("both");
+    ASSERT_TRUE(handle.has_value());
+    auto allocated = slow_->Allocate(payload.size());
+    ASSERT_TRUE(allocated.has_value());
+    ASSERT_TRUE(allocated->Write(0, AsBytes(payload)).has_value());
+    auto completed = std::move(allocated.value()).Complete("both");
+    ASSERT_TRUE(completed.has_value());
+    ASSERT_TRUE(slow_->RegisterWithHandle(std::move(completed.value()), *handle)
+                    .has_value());
+
+    EXPECT_EQ(OffloadFromTiler(config_, deps_, fast_->Id()),
+              ConsumeResult::kIgnored);
+    EXPECT_EQ(scan_stats_->Value(
+                  fast_->Id(), slow_->Id(),
+                  OffloadScanOutcome::kPlacementDestinationAlreadyPresent),
+              1U);
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), std::nullopt,
+                                 OffloadScanOutcome::kPlacementNoAdmission),
+              1U);
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), slow_->Id(),
+                                 OffloadScanOutcome::kEnqueued),
+              0U);
+}
+
+TEST_F(MovementConsumersTest, OffloadScanRecordsQueueRejection) {
+    MovementConsumerConfig config;
+    config.offload_high_watermark = 0.0001;
+    Build(config);
+
+    ImmutableBlock block = Commit(*fast_, "queued", 0xAA);
+    ASSERT_TRUE(static_cast<bool>(block));
+    clock_->Advance(2s);
+    RejectingMovementSink rejecting_sink;
+    deps_.sink = &rejecting_sink;
+
+    EXPECT_EQ(OffloadFromTiler(config_, deps_, fast_->Id()),
+              ConsumeResult::kIgnored);
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), slow_->Id(),
+                                 OffloadScanOutcome::kTrackerAccepted),
+              1U);
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), slow_->Id(),
+                                 OffloadScanOutcome::kQueueRejected),
+              1U);
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), slow_->Id(),
+                                 OffloadScanOutcome::kEnqueued),
+              0U);
+}
+
+TEST_F(MovementConsumersTest, OffloadScanRecordsTrackerAndQueueOutcomes) {
+    MovementConsumerConfig config;
+    config.offload_high_watermark = 0.0001;
+    Build(config);
+
+    ImmutableBlock block = Commit(*fast_, "moving", 0x99);
+    ASSERT_TRUE(static_cast<bool>(block));
+    clock_->Advance(2s);
+
+    EXPECT_EQ(OffloadFromTiler(config_, deps_, fast_->Id()),
+              ConsumeResult::kCommandEnqueued);
+    EXPECT_EQ(OffloadFromTiler(config_, deps_, fast_->Id()),
+              ConsumeResult::kIgnored);
+
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), slow_->Id(),
+                                 OffloadScanOutcome::kPlacementSelected),
+              2U);
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), slow_->Id(),
+                                 OffloadScanOutcome::kTrackerAccepted),
+              1U);
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), slow_->Id(),
+                                 OffloadScanOutcome::kEnqueued),
+              1U);
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), slow_->Id(),
+                                 OffloadScanOutcome::kTrackerRejectedInflight),
+              1U);
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), slow_->Id(),
+                                 OffloadScanOutcome::kQueueRejected),
+              0U);
 }
 
 TEST_F(MovementConsumersTest, ACommitAboveTheWatermarkOffloadsOneBlockDown) {

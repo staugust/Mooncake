@@ -20,11 +20,16 @@
 // most one decision per fact. Neither blocks: they look things up, decide, and
 // hand a command to the sink.
 
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <shared_mutex>
 #include <string>
+#include <unordered_map>
 
 #include <ylt/util/tl/expected.hpp>
 
@@ -37,6 +42,95 @@
 #include "types.h"
 
 namespace mooncake::v2 {
+
+/**
+ * @enum OffloadScanOutcome
+ * @brief Every observable reason an offload scan did or did not produce a
+ *        command.
+ *
+ * The funnels are deliberately separate. `scan_passes` proves the scanner ran;
+ * `scan_no_candidates` says it reached victim selection and found nothing;
+ * placement counters distinguish an unusable topology from an unusable
+ * destination; tracker and queue counters distinguish accepted work from the
+ * two later stages that can still reject it.
+ */
+enum class OffloadScanOutcome : uint8_t {
+    kScanPasses,
+    kScanSourceMissing,
+    kScanBelowWatermark,
+    kScanLaneInvalid,
+    kScanBatchOverflow,
+    kScanNoCandidates,
+    kScanCandidatesSelected,
+    kScanCandidateNotOwned,
+    kScanCandidateExamined,
+    kScanCandidateStale,
+    kScanCandidateNotCanonical,
+    kPlacementSourceMissing,
+    kPlacementNoDestination,
+    kPlacementDestinationOverLimit,
+    kPlacementDestinationAlreadyPresent,
+    kPlacementDestinationNotAddressable,
+    kPlacementMissingEdge,
+    kPlacementNoAdmission,
+    kPlacementSelected,
+    kTrackerRejectedInflight,
+    kTrackerRejectedCooldown,
+    kTrackerRejectedMinimumResidency,
+    kTrackerRejectedStopped,
+    kTrackerRejectedInvalid,
+    kTrackerAccepted,
+    kQueueRejected,
+    kEnqueued,
+};
+
+constexpr size_t kOffloadScanOutcomeCount =
+    static_cast<size_t>(OffloadScanOutcome::kEnqueued) + 1;
+const char* ToString(OffloadScanOutcome outcome);
+
+/**
+ * @brief Route-labelled cumulative counters for the offload decision funnel.
+ *
+ * The lock is only contended on scanner decisions. It is not on Put/Get or on
+ * movement execution, and serialization takes only a shared lock.
+ */
+class OffloadScanStats {
+   public:
+    /**
+     * Count `count` occurrences. `destination` is empty for scan outcomes that
+     * happen before a target is selected, and set for placement/tracker/queue
+     * outcomes so a multi-level deployment can distinguish DRAM->NVMe from
+     * DRAM->CXL.
+     */
+    void Record(const UUID& source_tiler,
+                const std::optional<UUID>& destination_tiler,
+                OffloadScanOutcome outcome, uint64_t count = 1);
+    uint64_t Value(const UUID& source_tiler,
+                   const std::optional<UUID>& destination_tiler,
+                   OffloadScanOutcome outcome) const;
+    /** Prometheus text, keyed by source/destination/outcome. */
+    std::string Serialize() const;
+
+   private:
+    struct RouteKey {
+        UUID source_tiler{0, 0};
+        UUID destination_tiler{0, 0};
+        bool has_destination = false;
+        bool operator==(const RouteKey&) const = default;
+    };
+    struct RouteKeyHash {
+        size_t operator()(const RouteKey& key) const noexcept;
+    };
+    struct RouteCounters {
+        std::array<std::atomic<uint64_t>, kOffloadScanOutcomeCount> counters{};
+    };
+
+    static RouteKey MakeKey(const UUID& source_tiler,
+                            const std::optional<UUID>& destination_tiler);
+
+    mutable std::shared_mutex mutex_;
+    std::unordered_map<RouteKey, RouteCounters, RouteKeyHash> routes_;
+};
 
 /**
  * @struct MovementConsumerConfig
@@ -96,6 +190,8 @@ struct MovementConsumerDeps {
     MovementTracker* movement = nullptr;
     MovementSink* sink = nullptr;
     std::shared_ptr<Clock> clock;
+    /** Optional decision funnel counters; owned by DataManagerV2. */
+    OffloadScanStats* scan_stats = nullptr;
 };
 
 /**
