@@ -410,6 +410,10 @@ ErrorCode P2PClientService::InitStorage(const P2PClientConfig& config) {
                 [data_manager_v2]() -> std::string {
                     return data_manager_v2->OffloadScanStatsString();
                 });
+            metrics_->SetV2AllocationFailureStatsProvider(
+                [data_manager_v2]() -> std::string {
+                    return data_manager_v2->AllocationFailureStatsString();
+                });
         } else {
             LOG(WARNING)
                 << "DataManager version is V2 but concrete type is not "

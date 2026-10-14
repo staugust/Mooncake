@@ -367,10 +367,23 @@ struct P2PClientMetric : public ClientMetric {
         v2_offload_scan_stats_provider_ = std::move(provider);
     }
 
+    /**
+     * @brief Expose V2 request-path allocation failure/reclaim outcomes.
+     *
+     * `NO_AVAILABLE_HANDLE` is a client-visible allocation failure, but its
+     * internal cause is only distinguishable when the synchronous reclaim
+     * counters are visible together with offload scan and migration metrics.
+     */
+    void SetV2AllocationFailureStatsProvider(
+        std::function<std::string()> provider) {
+        v2_allocation_failure_stats_provider_ = std::move(provider);
+    }
+
    private:
     std::function<uint64_t()> v2_events_dropped_provider_;
     std::function<std::string()> v2_migration_stats_provider_;
     std::function<std::string()> v2_offload_scan_stats_provider_;
+    std::function<std::string()> v2_allocation_failure_stats_provider_;
 };
 
 }  // namespace mooncake

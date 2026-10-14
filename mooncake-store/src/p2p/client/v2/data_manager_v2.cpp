@@ -723,6 +723,9 @@ tl::expected<MutableBlock, ErrorCode> DataManagerV2::AllocateWithPolicy(
     // The matching fact event was already published by TilerManager::Allocate.
     auto& counters = allocation_failure_metrics_->For(tiler.Id(), source);
     counters.failures.fetch_add(1, std::memory_order_relaxed);
+    counters.last_size_bytes.store(size_bytes, std::memory_order_relaxed);
+    counters.last_free_bytes.store(tiler.FreeBytes(),
+                                   std::memory_order_relaxed);
 
     const AllocationFailurePolicyConfig policy =
         AllocationPolicyFor(tiler.Id());
@@ -1859,6 +1862,13 @@ std::string DataManagerV2::MigrationStatsString() const {
 
 std::string DataManagerV2::OffloadScanStatsString() const {
     return offload_scan_stats_.Serialize();
+}
+
+std::string DataManagerV2::AllocationFailureStatsString() const {
+    if (allocation_failure_metrics_ == nullptr) {
+        return "";
+    }
+    return allocation_failure_metrics_->Serialize();
 }
 
 DataManagerV2Metrics DataManagerV2::Metrics() const {

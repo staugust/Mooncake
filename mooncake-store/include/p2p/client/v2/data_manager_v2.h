@@ -263,6 +263,9 @@ class DataManagerV2 final : public DataManager, public DataManagerTestHook {
     /** Prometheus text for the V2 offload scan decision funnel. */
     std::string OffloadScanStatsString() const;
 
+    /** Prometheus text for request-path allocation failure/reclaim outcomes. */
+    std::string AllocationFailureStatsString() const;
+
     /** Hot-key snapshots that returned a partial answer because of the cap. */
     uint64_t HotKeyTruncationCount() const;
 

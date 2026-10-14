@@ -1,5 +1,9 @@
 #include "p2p/client/v2/v2_common.h"
 
+#include <array>
+#include <sstream>
+#include <string>
+
 #include <glog/logging.h>
 
 namespace mooncake::v2 {
@@ -94,6 +98,84 @@ AllocationFailureCounters& AllocationFailureMetrics::For(
         return unknown_[index];
     }
     return it->second[index];
+}
+
+std::string AllocationFailureMetrics::Serialize() const {
+    static constexpr std::array<const char*, 6> kOutcomes = {
+        "failures",        "evict_disabled", "evict_attempted",
+        "retry_succeeded", "retry_failed",   "evict_timed_out"};
+
+    std::ostringstream stream;
+    stream << "# HELP mooncake_p2p_v2_allocation_failure_outcomes_total "
+              "Allocation failures and the synchronous reclaim outcomes for "
+              "each tier/source\n";
+    stream << "# TYPE mooncake_p2p_v2_allocation_failure_outcomes_total "
+              "counter\n";
+
+    stream << "# HELP mooncake_p2p_v2_allocation_failure_last_size_bytes "
+              "Size requested by the latest allocation failure\n";
+    stream << "# TYPE mooncake_p2p_v2_allocation_failure_last_size_bytes "
+              "gauge\n";
+    stream << "# HELP mooncake_p2p_v2_allocation_failure_last_free_bytes "
+              "Free bytes seen by the latest allocation failure\n";
+    stream << "# TYPE mooncake_p2p_v2_allocation_failure_last_free_bytes "
+              "gauge\n";
+
+    auto emit = [&stream](const std::string& tier_label,
+                          const AllocationFailureCounters& counters,
+                          AllocationSource source) {
+        const std::array<uint64_t, 6> values = {
+            counters.failures.load(std::memory_order_relaxed),
+            counters.evict_disabled.load(std::memory_order_relaxed),
+            counters.evict_attempted.load(std::memory_order_relaxed),
+            counters.retry_succeeded.load(std::memory_order_relaxed),
+            counters.retry_failed.load(std::memory_order_relaxed),
+            counters.evict_timed_out.load(std::memory_order_relaxed)};
+        for (size_t outcome_index = 0; outcome_index < kOutcomes.size();
+             ++outcome_index) {
+            if (values[outcome_index] == 0) continue;
+            stream << "mooncake_p2p_v2_allocation_failure_outcomes_total"
+                      "{tier=\""
+                   << tier_label << "\",source=\"" << ToString(source)
+                   << "\",outcome=\"" << kOutcomes[outcome_index] << "\"} "
+                   << values[outcome_index] << "\n";
+        }
+
+        const uint64_t last_size =
+            counters.last_size_bytes.load(std::memory_order_relaxed);
+        if (last_size != 0) {
+            stream << "mooncake_p2p_v2_allocation_failure_last_size_bytes"
+                      "{tier=\""
+                   << tier_label << "\",source=\"" << ToString(source) << "\"} "
+                   << last_size << "\n";
+        }
+        const uint64_t last_free =
+            counters.last_free_bytes.load(std::memory_order_relaxed);
+        if (last_size != 0) {
+            stream << "mooncake_p2p_v2_allocation_failure_last_free_bytes"
+                      "{tier=\""
+                   << tier_label << "\",source=\"" << ToString(source) << "\"} "
+                   << last_free << "\n";
+        }
+    };
+
+    for (const auto& [tiler_id, source_counters] : counters_) {
+        std::ostringstream tier;
+        tier << tiler_id;
+        for (size_t source_index = 0;
+             source_index < static_cast<size_t>(AllocationSource::kCount);
+             ++source_index) {
+            emit(tier.str(), source_counters[source_index],
+                 static_cast<AllocationSource>(source_index));
+        }
+    }
+    for (size_t source_index = 0;
+         source_index < static_cast<size_t>(AllocationSource::kCount);
+         ++source_index) {
+        emit("unknown", unknown_[source_index],
+             static_cast<AllocationSource>(source_index));
+    }
+    return stream.str();
 }
 
 // ---------------------------------------------------------------------------
