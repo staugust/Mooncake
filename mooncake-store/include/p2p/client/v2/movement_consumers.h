@@ -73,6 +73,7 @@ enum class OffloadScanOutcome : uint8_t {
     kPlacementDestinationNotAddressable,
     kPlacementMissingEdge,
     kPlacementNoAdmission,
+    kPlacementSourceDetachSelected,
     kPlacementSelected,
     kTrackerRejectedInflight,
     kTrackerRejectedCooldown,

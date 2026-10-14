@@ -1,6 +1,6 @@
 #pragma once
 
-// MigrationEngine: executes Replicate and Migrate commands.
+// MigrationEngine: executes Replicate, Migrate and SourceDetach commands.
 //
 // A command is a proposal made from approximate policy state, possibly a while
 // ago. Before it copies anything the engine has to prove the proposal still
@@ -15,6 +15,8 @@
 // After the copy it re-checks all three under the key's mutation guard, since
 // any of them can change while a large block is being copied. Only then does a
 // Migrate delete its source, and only once the destination is matchable.
+// SourceDetach performs no copy: it deletes the source only while the named
+// destination still matches the same registration under that mutation guard.
 
 #include <condition_variable>
 #include <deque>
@@ -154,7 +156,9 @@ class MigrationEngine : public MovementSink {
 
     /**
      * @param request kReplicate keeps the source; kMigrate removes it once the
-     *        destination is matchable.
+     *        destination is matchable; kSourceDetach removes it only while a
+     *        destination replica with the same registration is still
+     *        matchable.
      * @return OBJECT_NOT_FOUND when the proposal is stale, which is an
      *         expected outcome rather than an error worth alarming on.
      */

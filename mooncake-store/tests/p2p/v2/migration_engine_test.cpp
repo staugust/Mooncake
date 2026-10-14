@@ -376,6 +376,95 @@ TEST_F(MigrationEngineTest, SuccessfulMigrationUpdatesTierMetrics) {
     EXPECT_EQ(tier_metric_.onboarded_keys.value(slow_label), 0);
 }
 
+TEST_F(MigrationEngineTest, SourceDetachRemovesRedundantSourceWithoutCopying) {
+    const std::string key = "migration_source_detach";
+    const std::vector<uint8_t> payload = Pattern(kBlockSize, 0x46);
+
+    ImmutableBlock fast_block = Commit(*fast_, key, payload);
+    ASSERT_TRUE(static_cast<bool>(fast_block));
+    auto registration = registry_.Match(key);
+    ASSERT_TRUE(registration.has_value());
+    const BlockId source_id = fast_block.Id();
+    fast_block = ImmutableBlock();
+
+    auto allocated = slow_->Allocate(payload.size());
+    ASSERT_TRUE(allocated.has_value());
+    ASSERT_TRUE(allocated->Write(0, AsBytes(payload)).has_value());
+    auto completed = std::move(allocated.value()).Complete(key);
+    ASSERT_TRUE(completed.has_value());
+    ASSERT_TRUE(
+        slow_->RegisterWithHandle(std::move(completed.value()), *registration)
+            .has_value());
+    auto slow_block = slow_->Match(*registration);
+    ASSERT_TRUE(slow_block.has_value()) << toString(slow_block.error());
+
+    const std::array<std::string, 1> fast_label{"fast"};
+    const std::array<std::string, 1> slow_label{"slow"};
+    tier_metric_.OnReplicaAdded(fast_->Id());
+    tier_metric_.OnReplicaAdded(slow_->Id());
+
+    auto result =
+        engine_->Execute(MakeRequest(MovementKind::kSourceDetach, key,
+                                     *registration, source_id, fast_, slow_));
+    ASSERT_TRUE(result.has_value()) << toString(result.error());
+
+    auto on_fast = fast_->Match(*registration);
+    ASSERT_FALSE(on_fast.has_value());
+    EXPECT_EQ(on_fast.error(), ErrorCode::OBJECT_NOT_FOUND);
+
+    auto on_slow = slow_->Match(*registration);
+    ASSERT_TRUE(on_slow.has_value()) << toString(on_slow.error());
+    EXPECT_EQ(ReadAll(*on_slow), payload);
+    slow_block = ImmutableBlock();
+
+    EXPECT_TRUE(allocations_.empty())
+        << "a detached source must not allocate, copy or register a duplicate";
+    EXPECT_TRUE(added_.empty());
+    ASSERT_EQ(removed_.size(), 1U);
+    EXPECT_EQ(removed_[0].key, key);
+    EXPECT_EQ(removed_[0].tiler_id, fast_->Id());
+
+    EXPECT_EQ(tier_metric_.key_count.value(fast_label), 0);
+    EXPECT_EQ(tier_metric_.key_count.value(slow_label), 1);
+    EXPECT_EQ(tier_metric_.offloaded_keys.value(fast_label), 1);
+
+    const MigrationStats stats = engine_->Stats();
+    EXPECT_EQ(stats.executed, 1U);
+    EXPECT_EQ(stats.succeeded, 1U);
+    EXPECT_EQ(stats.stale, 0U);
+    EXPECT_EQ(stats.allocate_failed, 0U);
+    EXPECT_EQ(stats.copy_failed, 0U);
+    EXPECT_EQ(stats.register_failed, 0U);
+}
+
+TEST_F(MigrationEngineTest, SourceDetachKeepsSourceWhenDestinationIsMissing) {
+    const std::string key = "migration_source_detach_missing";
+    const std::vector<uint8_t> payload = Pattern(kBlockSize, 0x47);
+
+    ImmutableBlock source_block = Commit(*fast_, key, payload);
+    ASSERT_TRUE(static_cast<bool>(source_block));
+    auto registration = registry_.Match(key);
+    ASSERT_TRUE(registration.has_value());
+    const BlockId source_id = source_block.Id();
+    source_block = ImmutableBlock();
+
+    auto result =
+        engine_->Execute(MakeRequest(MovementKind::kSourceDetach, key,
+                                     *registration, source_id, fast_, slow_));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), ErrorCode::OBJECT_NOT_FOUND);
+
+    auto on_fast = fast_->Match(*registration);
+    ASSERT_TRUE(on_fast.has_value());
+    EXPECT_EQ(ReadAll(*on_fast), payload);
+    EXPECT_FALSE(slow_->Match(*registration).has_value());
+    EXPECT_TRUE(allocations_.empty());
+    EXPECT_TRUE(added_.empty());
+    EXPECT_TRUE(removed_.empty());
+    EXPECT_EQ(engine_->Stats().stale, 1U);
+    EXPECT_EQ(engine_->Stats().succeeded, 0U);
+}
+
 TEST_F(MigrationEngineTest, MigrateRemovesTheSourceOnceTheDestinationIsUp) {
     const std::string key = "migration_migrate";
     const std::vector<uint8_t> payload = Pattern(kBlockSize, 0x22);

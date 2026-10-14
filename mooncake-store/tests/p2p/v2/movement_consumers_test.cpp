@@ -397,7 +397,7 @@ TEST_F(MovementConsumersTest, OffloadScanRecordsNoDestination) {
               1U);
 }
 
-TEST_F(MovementConsumersTest, OffloadScanRecordsDestinationAlreadyPresent) {
+TEST_F(MovementConsumersTest, OffloadScanDetachesSourceWhenDestinationExists) {
     MovementConsumerConfig config;
     config.offload_high_watermark = 0.0001;
     Build(config);
@@ -405,6 +405,8 @@ TEST_F(MovementConsumersTest, OffloadScanRecordsDestinationAlreadyPresent) {
     const std::vector<uint8_t> payload = Pattern(kBlockSize, 0x88);
     ImmutableBlock block = Commit(*fast_, "both", 0x88);
     ASSERT_TRUE(static_cast<bool>(block));
+    const BlockId source_id = block.Id();
+    block = ImmutableBlock();
     auto handle = registry_.Match("both");
     ASSERT_TRUE(handle.has_value());
     auto allocated = slow_->Allocate(payload.size());
@@ -416,16 +418,33 @@ TEST_F(MovementConsumersTest, OffloadScanRecordsDestinationAlreadyPresent) {
                     .has_value());
 
     EXPECT_EQ(OffloadFromTiler(config_, deps_, fast_->Id()),
-              ConsumeResult::kIgnored);
-    EXPECT_EQ(scan_stats_->Value(
-                  fast_->Id(), slow_->Id(),
-                  OffloadScanOutcome::kPlacementDestinationAlreadyPresent),
-              1U);
-    EXPECT_EQ(scan_stats_->Value(fast_->Id(), std::nullopt,
-                                 OffloadScanOutcome::kPlacementNoAdmission),
+              ConsumeResult::kCommandEnqueued);
+    EXPECT_EQ(
+        scan_stats_->Value(fast_->Id(), slow_->Id(),
+                           OffloadScanOutcome::kPlacementSourceDetachSelected),
+        1U);
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), slow_->Id(),
+                                 OffloadScanOutcome::kTrackerAccepted),
               1U);
     EXPECT_EQ(scan_stats_->Value(fast_->Id(), slow_->Id(),
                                  OffloadScanOutcome::kEnqueued),
+              1U);
+
+    ASSERT_EQ(commands_->Count(), 1U);
+    const std::vector<MovementRequest> requests = commands_->Requests();
+    EXPECT_EQ(requests[0].kind, MovementKind::kSourceDetach);
+    EXPECT_EQ(requests[0].route.kind, MovementKind::kSourceDetach);
+    EXPECT_EQ(requests[0].source_tiler, fast_->Id());
+    EXPECT_EQ(requests[0].destination_tiler, slow_->Id());
+    EXPECT_EQ(requests[0].source_block_id, source_id);
+
+    // This is progress, not a placement failure: a blocked duplicate source
+    // would never free DRAM and would make this counter grow every scan.
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), std::nullopt,
+                                 OffloadScanOutcome::kPlacementNoAdmission),
+              0U);
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), slow_->Id(),
+                                 OffloadScanOutcome::kPlacementSelected),
               0U);
 }
 

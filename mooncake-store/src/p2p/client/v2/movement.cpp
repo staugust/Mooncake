@@ -10,6 +10,8 @@ const char* ToString(MovementKind kind) {
             return "replicate";
         case MovementKind::kMigrate:
             return "migrate";
+        case MovementKind::kSourceDetach:
+            return "source_detach";
     }
     return "unknown";
 }

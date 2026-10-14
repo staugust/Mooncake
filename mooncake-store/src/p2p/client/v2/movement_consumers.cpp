@@ -305,8 +305,11 @@ ConsumeResult OffloadFromTilerImpl(const MovementConsumerConfig& config,
             continue;
         }
         if (scan_stats != nullptr) {
-            scan_stats->Record(tiler_id, decision->destination_tiler,
-                               OffloadScanOutcome::kPlacementSelected);
+            const OffloadScanOutcome outcome =
+                decision->kind == MovementKind::kSourceDetach
+                    ? OffloadScanOutcome::kPlacementSourceDetachSelected
+                    : OffloadScanOutcome::kPlacementSelected;
+            scan_stats->Record(tiler_id, decision->destination_tiler, outcome);
         }
 
         const ProposalResult proposal =
@@ -460,6 +463,8 @@ const char* ToString(OffloadScanOutcome outcome) {
             return "placement_missing_edge";
         case OffloadScanOutcome::kPlacementNoAdmission:
             return "placement_no_admission";
+        case OffloadScanOutcome::kPlacementSourceDetachSelected:
+            return "placement_source_detach_selected";
         case OffloadScanOutcome::kPlacementSelected:
             return "placement_selected";
         case OffloadScanOutcome::kTrackerRejectedInflight:

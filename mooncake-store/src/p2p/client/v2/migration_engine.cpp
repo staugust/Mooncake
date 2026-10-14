@@ -62,6 +62,10 @@ tl::expected<void, ErrorCode> MigrationEngine::Execute(
     TilerManager* source = tilers_->Find(request.source_tiler);
     TilerManager* destination = tilers_->Find(request.destination_tiler);
     if (source == nullptr || destination == nullptr) return note_stale();
+    if (source->Id() == destination->Id()) {
+        LOG(ERROR) << "A migration command must name two different tiers";
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+    }
 
     // Staleness check 1: the identity may already be gone.
     auto registration = request.registration.Lock();
@@ -81,6 +85,59 @@ tl::expected<void, ErrorCode> MigrationEngine::Execute(
     // concurrent Delete detaches it meanwhile.
     ImmutableBlock source_block = std::move(matched.value());
     const size_t size_bytes = source_block.Size();
+
+    if (request.kind == MovementKind::kSourceDetach) {
+        {
+            // The proposal saw the destination at scan time. A command can be
+            // queued long enough for that replica to disappear, so executor
+            // safety is decided here, under the one mutation guard that also
+            // serializes reclamation. The destination lookup and source delete
+            // are therefore atomic with respect to every other removal of this
+            // registration's replicas.
+            auto guard = registration->LockMutation();
+            if (guard.IsRetired() || !registry_->IsCanonical(*registration)) {
+                return note_stale();
+            }
+            auto current = source->Match(*registration);
+            if (!current || !(current->Id() == request.source_block_id)) {
+                return note_stale();
+            }
+            if (!destination->Match(*registration).has_value()) {
+                return note_stale();
+            }
+            auto removed =
+                source->Delete(*registration, request.source_block_id,
+                               /*defer_notify=*/true);
+            if (!removed) return note_stale();
+        }
+
+        // The deferred half of the delete, outside the mutation guard. The
+        // destination is not published again: Master and TierMetric already
+        // know about it, and a second add-replica would double-count the
+        // surviving replica.
+        source->NotifyDeleted(*registration, request.source_block_id,
+                              size_bytes);
+
+        if (callbacks_ != nullptr && callbacks_->remove_replica) {
+            auto removed =
+                callbacks_->remove_replica(registration->Key(), source->Id());
+            if (!removed) {
+                LOG(WARNING) << "remove-replica callback failed after "
+                                "detaching a redundant source for "
+                             << registration->Key();
+            }
+        }
+        if (tier_metric_ != nullptr) {
+            tier_metric_->OnReplicaRemoved(source->Id());
+            tier_metric_->OnMoved(source->Id(), destination->Id());
+        }
+
+        // The held source snapshot goes out of scope with this function, so
+        // the bytes it kept alive are released after the fact is published.
+        std::lock_guard<std::mutex> lock(stats_mu_);
+        ++stats_.succeeded;
+        return {};
+    }
 
     auto target =
         allocate_block_(destination->Id(), size_bytes,
