@@ -205,7 +205,12 @@ ConsumeResult OffloadFromTilerImpl(const MovementConsumerConfig& config,
         }
         return ConsumeResult::kIgnored;
     }
-    if (UsageRatioOf(*source) < config.offload_high_watermark) {
+    const double source_usage_ratio = UsageRatioOf(*source);
+    const bool offload_allowed =
+        source_usage_ratio >= config.offload_high_watermark;
+    const bool source_detach_allowed =
+        source_usage_ratio >= config.offload_source_detach_high_watermark;
+    if (!offload_allowed && !source_detach_allowed) {
         if (scan_stats != nullptr) {
             scan_stats->Record(tiler_id, std::nullopt,
                                OffloadScanOutcome::kScanBelowWatermark);
@@ -310,6 +315,23 @@ ConsumeResult OffloadFromTilerImpl(const MovementConsumerConfig& config,
                     ? OffloadScanOutcome::kPlacementSourceDetachSelected
                     : OffloadScanOutcome::kPlacementSelected;
             scan_stats->Record(tiler_id, decision->destination_tiler, outcome);
+        }
+        if (decision->kind == MovementKind::kSourceDetach &&
+            !source_detach_allowed) {
+            if (scan_stats != nullptr) {
+                scan_stats->Record(
+                    tiler_id, decision->destination_tiler,
+                    OffloadScanOutcome::kPlacementSourceDetachBelowWatermark);
+            }
+            continue;
+        }
+        if (decision->kind != MovementKind::kSourceDetach && !offload_allowed) {
+            if (scan_stats != nullptr) {
+                scan_stats->Record(
+                    tiler_id, decision->destination_tiler,
+                    OffloadScanOutcome::kPlacementOffloadBelowWatermark);
+            }
+            continue;
         }
 
         const ProposalResult proposal =
@@ -467,6 +489,10 @@ const char* ToString(OffloadScanOutcome outcome) {
             return "placement_source_detach_selected";
         case OffloadScanOutcome::kPlacementSelected:
             return "placement_selected";
+        case OffloadScanOutcome::kPlacementOffloadBelowWatermark:
+            return "placement_offload_below_watermark";
+        case OffloadScanOutcome::kPlacementSourceDetachBelowWatermark:
+            return "placement_source_detach_below_watermark";
         case OffloadScanOutcome::kTrackerRejectedInflight:
             return "tracker_rejected_inflight";
         case OffloadScanOutcome::kTrackerRejectedCooldown:
@@ -571,6 +597,16 @@ tl::expected<void, ErrorCode> ValidateMovementConsumerConfig(
                    << config.offload_high_watermark
                    << "; offload has to start before the tier is full or it "
                       "cannot keep ahead of reclamation";
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+    }
+    if (!(config.offload_source_detach_high_watermark > 0.0) ||
+        !(config.offload_source_detach_high_watermark < 1.0)) {
+        LOG(ERROR)
+            << "movement.offload_source_detach_high_watermark must be in "
+               "(0, 1), got "
+            << config.offload_source_detach_high_watermark
+            << "; source detach has to happen before the tier is full or it "
+               "cannot help reclaiming the source tier";
         return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
     }
     if (config.offload_batch_size == 0) {

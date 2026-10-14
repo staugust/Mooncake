@@ -448,6 +448,83 @@ TEST_F(MovementConsumersTest, OffloadScanDetachesSourceWhenDestinationExists) {
               0U);
 }
 
+TEST_F(MovementConsumersTest,
+       OffloadScanWithholdsSourceDetachBelowItsOwnWatermark) {
+    MovementConsumerConfig config;
+    config.offload_high_watermark = 0.0001;
+    config.offload_source_detach_high_watermark = 0.9;
+    Build(config);
+
+    const std::vector<uint8_t> payload = Pattern(kBlockSize, 0x89);
+    ImmutableBlock block = Commit(*fast_, "both/below-detach", 0x89);
+    ASSERT_TRUE(static_cast<bool>(block));
+    block = ImmutableBlock();
+    auto handle = registry_.Match("both/below-detach");
+    ASSERT_TRUE(handle.has_value());
+    auto allocated = slow_->Allocate(payload.size());
+    ASSERT_TRUE(allocated.has_value());
+    ASSERT_TRUE(allocated->Write(0, AsBytes(payload)).has_value());
+    auto completed = std::move(allocated.value()).Complete("both/below-detach");
+    ASSERT_TRUE(completed.has_value());
+    ASSERT_TRUE(slow_->RegisterWithHandle(std::move(completed.value()), *handle)
+                    .has_value());
+
+    EXPECT_EQ(OffloadFromTiler(config_, deps_, fast_->Id()),
+              ConsumeResult::kIgnored);
+    EXPECT_EQ(
+        scan_stats_->Value(fast_->Id(), slow_->Id(),
+                           OffloadScanOutcome::kPlacementSourceDetachSelected),
+        1U);
+    EXPECT_EQ(scan_stats_->Value(
+                  fast_->Id(), slow_->Id(),
+                  OffloadScanOutcome::kPlacementSourceDetachBelowWatermark),
+              1U);
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), slow_->Id(),
+                                 OffloadScanOutcome::kTrackerAccepted),
+              0U);
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), slow_->Id(),
+                                 OffloadScanOutcome::kEnqueued),
+              0U);
+    EXPECT_EQ(commands_->Count(), 0U);
+}
+
+TEST_F(MovementConsumersTest,
+       OffloadScanCanUseSourceDetachBelowTheOffloadWatermark) {
+    MovementConsumerConfig config;
+    config.offload_high_watermark = 0.9;
+    config.offload_source_detach_high_watermark = 0.0001;
+    Build(config);
+
+    const std::vector<uint8_t> payload = Pattern(kBlockSize, 0x8A);
+    ImmutableBlock block = Commit(*fast_, "detachable-below-offload", 0x8A);
+    ASSERT_TRUE(static_cast<bool>(block));
+    block = ImmutableBlock();
+    auto handle = registry_.Match("detachable-below-offload");
+    ASSERT_TRUE(handle.has_value());
+    auto allocated = slow_->Allocate(payload.size());
+    ASSERT_TRUE(allocated.has_value());
+    ASSERT_TRUE(allocated->Write(0, AsBytes(payload)).has_value());
+    auto completed =
+        std::move(allocated.value()).Complete("detachable-below-offload");
+    ASSERT_TRUE(completed.has_value());
+    ASSERT_TRUE(slow_->RegisterWithHandle(std::move(completed.value()), *handle)
+                    .has_value());
+
+    EXPECT_EQ(OffloadFromTiler(config_, deps_, fast_->Id()),
+              ConsumeResult::kCommandEnqueued);
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), std::nullopt,
+                                 OffloadScanOutcome::kScanBelowWatermark),
+              0U);
+    EXPECT_EQ(
+        scan_stats_->Value(fast_->Id(), slow_->Id(),
+                           OffloadScanOutcome::kPlacementSourceDetachSelected),
+        1U);
+    EXPECT_EQ(scan_stats_->Value(fast_->Id(), slow_->Id(),
+                                 OffloadScanOutcome::kEnqueued),
+              1U);
+    EXPECT_EQ(commands_->Count(), 1U);
+}
+
 TEST_F(MovementConsumersTest, OffloadScanRecordsQueueRejection) {
     MovementConsumerConfig config;
     config.offload_high_watermark = 0.0001;
@@ -768,6 +845,10 @@ TEST_F(MovementConsumersTest, ConfigValidationRejectsUnusableValues) {
     MovementConsumerConfig full;
     full.offload_high_watermark = 1.0;
     EXPECT_FALSE(ValidateMovementConsumerConfig(full).has_value());
+
+    MovementConsumerConfig detach_full;
+    detach_full.offload_source_detach_high_watermark = 1.0;
+    EXPECT_FALSE(ValidateMovementConsumerConfig(detach_full).has_value());
 
     MovementConsumerConfig negative;
     negative.onboard_min_read_heat = -1.0;
