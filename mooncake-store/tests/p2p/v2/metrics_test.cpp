@@ -301,7 +301,12 @@ TEST_F(V2MetricsTest, EventAndPolicyConfigurationIsReachableFromJson) {
             "events": {"shard_count": 2, "event_queue_capacity": 32,
                        "movement_queue_capacity": 8,
                        "movement_worker_count": 3},
+            "migration": {"max_inflight_per_route": 7,
+                          "max_inflight_per_device": 11},
             "placement_policy": {"offload_high_watermark": 0.75,
+                                 "offload_batch_size": 5,
+                                 "offload_scan_thread_count": 4,
+                                 "offload_scan_interval_ms": 250,
                                  "offload_low_watermark": 0.5,
                                  "onboard_min_frequency": 4},
             "max_registration_retry": 3,
@@ -315,6 +320,8 @@ TEST_F(V2MetricsTest, EventAndPolicyConfigurationIsReachableFromJson) {
 
     EXPECT_EQ(config->events.shard_count, 2U);
     EXPECT_EQ(config->events.event_queue_capacity, 32U);
+    EXPECT_EQ(config->migration.max_inflight_per_route, 7U);
+    EXPECT_EQ(config->migration.max_inflight_per_device, 11U);
     // The command queue moved to the migration engine and became one queue
     // per route; the old JSON name still sets the total, so an existing tier
     // file keeps meaning what it meant.
@@ -325,6 +332,10 @@ TEST_F(V2MetricsTest, EventAndPolicyConfigurationIsReachableFromJson) {
     // decision actually lives. offload_low_watermark had no reader once
     // offload became one decision per event, so it is accepted and ignored.
     EXPECT_DOUBLE_EQ(config->movement.offload_high_watermark, 0.75);
+    EXPECT_EQ(config->movement.offload_batch_size, 5U);
+    EXPECT_EQ(config->movement.offload_scan_thread_count, 4U);
+    EXPECT_EQ(config->movement.offload_scan_interval,
+              std::chrono::milliseconds(250));
     EXPECT_DOUBLE_EQ(config->movement.onboard_min_read_heat, 4.0);
     EXPECT_EQ(config->max_registration_retry, 3U);
     EXPECT_EQ(config->stop_drain_timeout, std::chrono::milliseconds(250));
@@ -355,6 +366,15 @@ TEST_F(V2MetricsTest, InvalidEventAndPolicyConfigurationIsRejected) {
     ASSERT_FALSE(no_headroom.has_value());
     EXPECT_EQ(no_headroom.error(), ErrorCode::INVALID_PARAMS);
 
+    auto zero_batch =
+        ParseDataManagerV2Config(ParseJson(R"({
+        "tiers": [{"type": "DRAM", "capacity": 1048576}],
+        "v2": {"placement_policy": {"offload_batch_size": 0}}
+    })"),
+                                 LocalTransferConfig{}, KeyLeaseConfig{});
+    ASSERT_FALSE(zero_batch.has_value());
+    EXPECT_EQ(zero_batch.error(), ErrorCode::INVALID_PARAMS);
+
     auto zero_timeout =
         ParseDataManagerV2Config(ParseJson(R"({
         "tiers": [{"type": "DRAM", "capacity": 1048576}],
@@ -362,6 +382,31 @@ TEST_F(V2MetricsTest, InvalidEventAndPolicyConfigurationIsRejected) {
     })"),
                                  LocalTransferConfig{}, KeyLeaseConfig{});
     EXPECT_EQ(zero_timeout.error(), ErrorCode::INVALID_PARAMS);
+
+    auto zero_inflight_route =
+        ParseDataManagerV2Config(ParseJson(R"({
+        "tiers": [{"type": "DRAM", "capacity": 1048576}],
+        "v2": {"migration": {"max_inflight_per_route": 0}}
+    })"),
+                                 LocalTransferConfig{}, KeyLeaseConfig{});
+    EXPECT_EQ(zero_inflight_route.error(), ErrorCode::INVALID_PARAMS);
+
+    auto zero_inflight_device =
+        ParseDataManagerV2Config(ParseJson(R"({
+        "tiers": [{"type": "DRAM", "capacity": 1048576}],
+        "v2": {"migration": {"max_inflight_per_device": 0}}
+    })"),
+                                 LocalTransferConfig{}, KeyLeaseConfig{});
+    EXPECT_EQ(zero_inflight_device.error(), ErrorCode::INVALID_PARAMS);
+
+    auto zero_scan_interval =
+        ParseDataManagerV2Config(ParseJson(R"({
+        "tiers": [{"type": "DRAM", "capacity": 1048576}],
+        "v2": {"placement_policy": {"offload_scan_thread_count": 2,
+                                    "offload_scan_interval_ms": 0}}
+    })"),
+                                 LocalTransferConfig{}, KeyLeaseConfig{});
+    EXPECT_EQ(zero_scan_interval.error(), ErrorCode::INVALID_PARAMS);
 }
 
 // A capped snapshot is a partial answer to "everything you track", and

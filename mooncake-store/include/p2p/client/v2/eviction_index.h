@@ -26,6 +26,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -142,12 +143,16 @@ class EvictionIndex {
                              const BlockToken& new_token) = 0;
 
     /**
-     * @brief Coldest-first candidates totalling at least `target_bytes`.
+     * @brief Coldest-first candidates totalling at least `target_bytes`, and
+     *        at most `max_keys`. The default keeps existing byte-target
+     * semantics.
      *
      * The result proves nothing: a candidate may already be gone. The caller
      * validates each one against the BlockIndex before acting.
      */
-    virtual std::vector<BlockToken> SelectVictims(size_t target_bytes) = 0;
+    virtual std::vector<BlockToken> SelectVictims(
+        size_t target_bytes,
+        size_t max_keys = std::numeric_limits<size_t>::max()) = 0;
 
     /**
      * @brief Rebuild from the authoritative index.

@@ -706,6 +706,12 @@ void P2PClientMetric::serialize(std::string& str) {
     peer_request_metrics.serialize(str);
     tier_metric->serialize(str);
     key_retention->serialize(str);
+    if (v2_offload_scan_stats_provider_) {
+        str += v2_offload_scan_stats_provider_();
+    }
+    if (v2_allocation_failure_stats_provider_) {
+        str += v2_allocation_failure_stats_provider_();
+    }
 }
 
 std::string P2PClientMetric::summary_metrics() {
@@ -743,6 +749,11 @@ std::string P2PClientMetric::summary_metrics() {
     if (v2_migration_stats_provider_) {
         ss << "=== P2P Data Manager V2 Migration ===\n";
         ss << v2_migration_stats_provider_();
+    }
+
+    if (v2_offload_scan_stats_provider_) {
+        ss << "=== P2P Data Manager V2 Offload Scan ===\n";
+        ss << v2_offload_scan_stats_provider_();
     }
 
     if (v2_allocation_failure_stats_provider_) {

@@ -14,6 +14,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <limits>
 #include <vector>
 
 #include <glog/logging.h>
@@ -219,11 +220,13 @@ class OrderedEvictionIndex final : public EvictionIndex {
         }
     }
 
-    std::vector<BlockToken> SelectVictims(size_t target_bytes) override {
+    std::vector<BlockToken> SelectVictims(
+        size_t target_bytes,
+        size_t max_keys = std::numeric_limits<size_t>::max()) override {
         std::vector<BlockToken> victims;
         // A zero target asks for nothing; evicting "just one to be safe" would
         // throw away a block no watermark asked for.
-        if (target_bytes == 0) return victims;
+        if (target_bytes == 0 || max_keys == 0) return victims;
 
         // Coldest first, and only as far as the target requires: an eviction
         // round must not walk the whole tier to reclaim a fraction of it. The
@@ -256,6 +259,7 @@ class OrderedEvictionIndex final : public EvictionIndex {
             token.size_bytes = entry->second.size_bytes;
             victims.push_back(std::move(token));
             collected += entry->second.size_bytes;
+            if (victims.size() >= max_keys) break;
             if (collected >= target_bytes) break;
         }
         return victims;

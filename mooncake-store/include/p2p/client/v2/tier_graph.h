@@ -149,6 +149,35 @@ class TierGraph {
 };
 
 /**
+ * @enum PlacementRejectionReason
+ * @brief Why a placement selected no target.
+ */
+enum class PlacementRejectionReason : uint8_t {
+    kSourceMissing,
+    kNoDestination,
+    kDestinationOverLimit,
+    kAlreadyPresent,
+    kDestinationNotAddressable,
+    kMissingEdge,
+    /** Candidates existed, but none passed the admission checks. */
+    kNoAdmission,
+};
+
+/**
+ * @struct PlacementRejection
+ * @brief A rejection reason plus the candidate it belongs to.
+ *
+ * `destination_tiler` is empty for source/topology failures. It is set for a
+ * candidate failure so callers can label diagnostics by route.
+ */
+struct PlacementRejection {
+    PlacementRejectionReason reason = PlacementRejectionReason::kSourceMissing;
+    std::optional<UUID> destination_tiler;
+
+    static PlacementRejection ReasonOnly(PlacementRejectionReason reason);
+};
+
+/**
  * @struct PlacementContext
  * @brief Everything a placement decision may look at.
  *
@@ -175,6 +204,12 @@ struct PlacementContext {
      * canonical registration identity.
      */
     std::function<bool(const UUID&)> already_present;
+    /**
+     * Optional diagnostic callback. It is invoked for every rejected source,
+     * topology or candidate; `Select()` still returns only a decision/nullopt
+     * so existing policy callers remain source-compatible.
+     */
+    std::function<void(const PlacementRejection&)> on_reject;
 };
 
 /**

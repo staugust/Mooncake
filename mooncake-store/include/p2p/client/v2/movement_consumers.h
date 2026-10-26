@@ -20,10 +20,16 @@
 // most one decision per fact. Neither blocks: they look things up, decide, and
 // hand a command to the sink.
 
+#include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <shared_mutex>
 #include <string>
+#include <unordered_map>
 
 #include <ylt/util/tl/expected.hpp>
 
@@ -38,6 +44,95 @@
 namespace mooncake::v2 {
 
 /**
+ * @enum OffloadScanOutcome
+ * @brief Every observable reason an offload scan did or did not produce a
+ *        command.
+ *
+ * The funnels are deliberately separate. `scan_passes` proves the scanner ran;
+ * `scan_no_candidates` says it reached victim selection and found nothing;
+ * placement counters distinguish an unusable topology from an unusable
+ * destination; tracker and queue counters distinguish accepted work from the
+ * two later stages that can still reject it.
+ */
+enum class OffloadScanOutcome : uint8_t {
+    kScanPasses,
+    kScanSourceMissing,
+    kScanBelowWatermark,
+    kScanLaneInvalid,
+    kScanBatchOverflow,
+    kScanNoCandidates,
+    kScanCandidatesSelected,
+    kScanCandidateNotOwned,
+    kScanCandidateExamined,
+    kScanCandidateStale,
+    kScanCandidateNotCanonical,
+    kPlacementSourceMissing,
+    kPlacementNoDestination,
+    kPlacementDestinationOverLimit,
+    kPlacementDestinationAlreadyPresent,
+    kPlacementDestinationNotAddressable,
+    kPlacementMissingEdge,
+    kPlacementNoAdmission,
+    kPlacementSelected,
+    kTrackerRejectedInflight,
+    kTrackerRejectedCooldown,
+    kTrackerRejectedMinimumResidency,
+    kTrackerRejectedStopped,
+    kTrackerRejectedInvalid,
+    kTrackerAccepted,
+    kQueueRejected,
+    kEnqueued,
+};
+
+constexpr size_t kOffloadScanOutcomeCount =
+    static_cast<size_t>(OffloadScanOutcome::kEnqueued) + 1;
+const char* ToString(OffloadScanOutcome outcome);
+
+/**
+ * @brief Route-labelled cumulative counters for the offload decision funnel.
+ *
+ * The lock is only contended on scanner decisions. It is not on Put/Get or on
+ * movement execution, and serialization takes only a shared lock.
+ */
+class OffloadScanStats {
+   public:
+    /**
+     * Count `count` occurrences. `destination` is empty for scan outcomes that
+     * happen before a target is selected, and set for placement/tracker/queue
+     * outcomes so a multi-level deployment can distinguish DRAM->NVMe from
+     * DRAM->CXL.
+     */
+    void Record(const UUID& source_tiler,
+                const std::optional<UUID>& destination_tiler,
+                OffloadScanOutcome outcome, uint64_t count = 1);
+    uint64_t Value(const UUID& source_tiler,
+                   const std::optional<UUID>& destination_tiler,
+                   OffloadScanOutcome outcome) const;
+    /** Prometheus text, keyed by source/destination/outcome. */
+    std::string Serialize() const;
+
+   private:
+    struct RouteKey {
+        UUID source_tiler{0, 0};
+        UUID destination_tiler{0, 0};
+        bool has_destination = false;
+        bool operator==(const RouteKey&) const = default;
+    };
+    struct RouteKeyHash {
+        size_t operator()(const RouteKey& key) const noexcept;
+    };
+    struct RouteCounters {
+        std::array<std::atomic<uint64_t>, kOffloadScanOutcomeCount> counters{};
+    };
+
+    static RouteKey MakeKey(const UUID& source_tiler,
+                            const std::optional<UUID>& destination_tiler);
+
+    mutable std::shared_mutex mutex_;
+    std::unordered_map<RouteKey, RouteCounters, RouteKeyHash> routes_;
+};
+
+/**
  * @struct MovementConsumerConfig
  */
 struct MovementConsumerConfig {
@@ -48,6 +143,27 @@ struct MovementConsumerConfig {
      * single-tier object alive.
      */
     double offload_high_watermark = 0.9;
+
+    /**
+     * Number of coldest keys proposed when one commit crosses the watermark.
+     * `1` preserves the previous per-event behavior; values above one amortize
+     * offload bursts when many blocks are in the tier.
+     */
+    std::size_t offload_batch_size = 1;
+
+    /**
+     * Number of background threads that scan high-usage tilers and propose
+     * offload work. Zero keeps the event-driven path unchanged; values above
+     * zero add a dedicated scanner pool that runs independently of commit
+     * events.
+     */
+    std::size_t offload_scan_thread_count = 0;
+
+    /**
+     * Sleep window used by each offload scanner thread. Must be positive
+     * when scanner threads are enabled.
+     */
+    std::chrono::milliseconds offload_scan_interval{100};
 
     /**
      * Read heat a block on a slow tier needs before it is worth copying up.
@@ -74,11 +190,13 @@ struct MovementConsumerDeps {
     MovementTracker* movement = nullptr;
     MovementSink* sink = nullptr;
     std::shared_ptr<Clock> clock;
+    /** Optional decision funnel counters; owned by DataManagerV2. */
+    OffloadScanStats* scan_stats = nullptr;
 };
 
 /**
- * @brief Offload: a tier that has just grown past its watermark sheds its
- *        coldest block towards a slower neighbour.
+ * @brief Offload: a tier that has just grown past its watermark sheds up to
+ *        the configured number of coldest keys towards a slower neighbour.
  *
  * Subscribes to kCommit only. The committed block is not necessarily the one
  * that moves -- the tier's own eviction ordering picks the victim, because
@@ -98,5 +216,17 @@ tl::expected<std::unique_ptr<EventConsumer>, ErrorCode> CreateOffloadConsumer(
  */
 tl::expected<std::unique_ptr<EventConsumer>, ErrorCode> CreateOnboardConsumer(
     const MovementConsumerConfig& config, const MovementConsumerDeps& deps);
+
+/**
+ * @brief Scan one tiler for offload candidates, independent of a trigger.
+ *
+ * The live EventCenter consumer still does this event-driven path; this
+ * exported entry point lets DataManagerV2 run it from a dedicated scanner
+ * pool as well.
+ */
+ConsumeResult OffloadFromTiler(const MovementConsumerConfig& config,
+                               const MovementConsumerDeps& deps,
+                               const UUID& tiler_id, size_t lane_count = 1,
+                               size_t lane_index = 0);
 
 }  // namespace mooncake::v2

@@ -766,6 +766,10 @@ ErrorCode P2PClientService::InitStorage(const P2PClientConfig& config) {
                 [data_manager_v2]() -> std::string {
                     return data_manager_v2->MigrationStatsString();
                 });
+            metrics_->SetV2OffloadScanStatsProvider(
+                [data_manager_v2]() -> std::string {
+                    return data_manager_v2->OffloadScanStatsString();
+                });
             metrics_->SetV2AllocationFailureStatsProvider(
                 [data_manager_v2]() -> std::string {
                     return data_manager_v2->AllocationFailureStatsString();
