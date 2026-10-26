@@ -339,8 +339,18 @@ class NearestNeighbourPolicy final : public TierPlacementPolicy {
                     candidate->tiler_id);
                 continue;
             }
+            const bool already_on_candidate =
+                context.already_present &&
+                context.already_present(candidate->tiler_id);
+            // A redundant source is the one placement result that does not
+            // need destination capacity or a copy. On the offload direction it
+            // becomes a source-detach command; the executor will reprove the
+            // destination under the registration mutation guard before freeing
+            // the source. Onboard keeps rejecting it, because the candidate
+            // being on the faster tier means there is no promotion to do.
+            const bool source_detach = offload && already_on_candidate;
             auto admission_rejection =
-                AdmissionRejection(context, candidate->tiler_id);
+                AdmissionRejection(context, candidate->tiler_id, source_detach);
             if (admission_rejection.has_value()) {
                 Reject(context, *admission_rejection, candidate->tiler_id);
                 continue;
@@ -361,7 +371,8 @@ class NearestNeighbourPolicy final : public TierPlacementPolicy {
 
             PlacementDecision decision;
             decision.destination_tiler = candidate->tiler_id;
-            decision.kind = KindFor(offload);
+            decision.kind =
+                source_detach ? MovementKind::kSourceDetach : KindFor(offload);
             decision.route.kind = decision.kind;
             decision.route.source_tiler = source->tiler_id;
             decision.route.destination_tiler = candidate->tiler_id;
@@ -379,8 +390,8 @@ class NearestNeighbourPolicy final : public TierPlacementPolicy {
         }
 
         // Nowhere legal and useful to go. Not an error: the bottom tier of
-        // every deployment reaches this, and so does a key the destination
-        // already holds. The caller leaves the block where it is.
+        // every deployment reaches this, and onboard reaches it for a key the
+        // faster tier already holds. The caller leaves the block where it is.
         Reject(context,
                PlacementRejection::ReasonOnly(
                    PlacementRejectionReason::kNoAdmission),
@@ -390,8 +401,10 @@ class NearestNeighbourPolicy final : public TierPlacementPolicy {
 
    private:
     MovementKind KindFor(bool offload) const {
-        // An offload always migrates -- its whole purpose is to free the
-        // source. An onboard keeps the slow copy unless the deployment says
+        // An offload that must copy always migrates -- its whole purpose is to
+        // free the source. An already-present destination is converted into
+        // kSourceDetach before this helper. An onboard keeps the slow copy
+        // unless the deployment says
         // otherwise, because that copy is usually the durable one.
         if (offload) return MovementKind::kMigrate;
         return config_.onboard_keeps_source ? MovementKind::kReplicate
@@ -408,7 +421,12 @@ class NearestNeighbourPolicy final : public TierPlacementPolicy {
     }
 
     std::optional<PlacementRejection> AdmissionRejection(
-        const PlacementContext& context, const UUID& candidate) const {
+        const PlacementContext& context, const UUID& candidate,
+        bool source_detach) const {
+        // A redundant source consumes no destination capacity, so the
+        // destination's fullness must not block the one action that frees
+        // memory without allocating any.
+        if (source_detach) return std::nullopt;
         // A tier already at the limit is itself about to reclaim; feeding it
         // turns one tier's pressure into two tiers' pressure.
         if (context.usage_ratio &&

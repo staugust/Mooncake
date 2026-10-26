@@ -32,13 +32,18 @@ namespace mooncake::v2 {
 /**
  * @enum MovementKind
  * @brief kReplicate keeps the source, kMigrate removes it once the destination
- *        is visible. There is deliberately no kEvict: reclaiming space is a
- *        tiler-local operation owned by that tiler's EvictEngine, not a
- *        cross-tier command that travels through this pipeline.
+ *        is visible, and kSourceDetach removes only a redundant source. There
+ *        is deliberately no kEvict: ordinary reclaiming is tiler-local and
+ *        owns no cross-tier safety condition. kSourceDetach is the one
+ *        cross-tier exception: it runs only after the destination's own index
+ *        still holds the same registration, which is checked under that
+ *        registration's mutation guard immediately before the source is
+ *        removed.
  */
 enum class MovementKind : uint8_t {
     kReplicate,
     kMigrate,
+    kSourceDetach,
 };
 
 const char* ToString(MovementKind kind);

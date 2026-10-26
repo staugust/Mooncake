@@ -713,24 +713,40 @@ TEST_F(TierGraphTest, AFullDestinationIsSkippedForTheNextCandidate) {
                      .has_value());
 }
 
-TEST_F(TierGraphTest, ADestinationThatAlreadyHoldsTheBlockIsSuppressed) {
+TEST_F(TierGraphTest, OffloadDetachesTheSourceWhenDestinationHoldsIt) {
     auto fan_out = Explicit({DramNode(), CxlNode(), SsdNode()},
                             {MakeEdge(kDram, kCxl, /*cost=*/1.0),
                              MakeEdge(kDram, kSsd, /*cost=*/5.0)});
     auto policy = MakePolicy(fan_out);
 
-    // Copying a block onto a tier that already has it spends the bandwidth a
-    // real movement is queued behind and, for a migrate, would delete the
-    // source in favour of a copy that was already there.
+    // Copying a block onto a tier that already has it would spend the
+    // bandwidth a real movement is queued behind. The useful action is to
+    // delete the redundant source; the executor proves the destination still
+    // holds the same registration before it does.
     present_[kCxl] = true;
+    // Even a full destination is not a reason to keep the source: detaching
+    // adds no destination bytes.
+    usage_[kCxl] = 1.0;
     auto decision = policy->Select(Context(kDram, MovementDirection::kOffload));
     ASSERT_TRUE(decision.has_value());
-    EXPECT_EQ(decision->destination_tiler, kSsd);
+    EXPECT_EQ(decision->destination_tiler, kCxl);
+    EXPECT_EQ(decision->kind, MovementKind::kSourceDetach);
+    EXPECT_EQ(decision->route.kind, MovementKind::kSourceDetach);
+    EXPECT_EQ(decision->route.source_tiler, kDram);
+    EXPECT_EQ(decision->route.destination_tiler, kCxl);
 
-    // The only candidate holding it means there is nothing useful to do.
     auto chain_policy = MakePolicy(ThreeLevelChain());
+    auto only_candidate =
+        chain_policy->Select(Context(kDram, MovementDirection::kOffload));
+    ASSERT_TRUE(only_candidate.has_value());
+    EXPECT_EQ(only_candidate->destination_tiler, kCxl);
+    EXPECT_EQ(only_candidate->kind, MovementKind::kSourceDetach);
+
+    // Onboard is different: a faster replica is already servable, so deleting
+    // the slow source is not useful work.
+    present_[kCxl] = true;
     EXPECT_FALSE(
-        chain_policy->Select(Context(kDram, MovementDirection::kOffload))
+        chain_policy->Select(Context(kSsd, MovementDirection::kOnboard))
             .has_value());
 }
 

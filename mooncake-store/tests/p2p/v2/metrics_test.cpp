@@ -304,6 +304,7 @@ TEST_F(V2MetricsTest, EventAndPolicyConfigurationIsReachableFromJson) {
             "migration": {"max_inflight_per_route": 7,
                           "max_inflight_per_device": 11},
             "placement_policy": {"offload_high_watermark": 0.75,
+                                 "offload_source_detach_high_watermark": 0.65,
                                  "offload_batch_size": 5,
                                  "offload_scan_thread_count": 4,
                                  "offload_scan_interval_ms": 250,
@@ -332,6 +333,8 @@ TEST_F(V2MetricsTest, EventAndPolicyConfigurationIsReachableFromJson) {
     // decision actually lives. offload_low_watermark had no reader once
     // offload became one decision per event, so it is accepted and ignored.
     EXPECT_DOUBLE_EQ(config->movement.offload_high_watermark, 0.75);
+    EXPECT_DOUBLE_EQ(config->movement.offload_source_detach_high_watermark,
+                     0.65);
     EXPECT_EQ(config->movement.offload_batch_size, 5U);
     EXPECT_EQ(config->movement.offload_scan_thread_count, 4U);
     EXPECT_EQ(config->movement.offload_scan_interval,

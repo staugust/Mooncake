@@ -73,7 +73,10 @@ enum class OffloadScanOutcome : uint8_t {
     kPlacementDestinationNotAddressable,
     kPlacementMissingEdge,
     kPlacementNoAdmission,
+    kPlacementSourceDetachSelected,
     kPlacementSelected,
+    kPlacementOffloadBelowWatermark,
+    kPlacementSourceDetachBelowWatermark,
     kTrackerRejectedInflight,
     kTrackerRejectedCooldown,
     kTrackerRejectedMinimumResidency,
@@ -143,6 +146,14 @@ struct MovementConsumerConfig {
      * single-tier object alive.
      */
     double offload_high_watermark = 0.9;
+
+    /**
+     * Pressure gate for the already-present shortcut. Unlike
+     * offload_high_watermark, this controls kSourceDetach only. It can run
+     * earlier or later than normal offload because it consumes no bandwidth
+     * and no destination capacity.
+     */
+    double offload_source_detach_high_watermark = 0.9;
 
     /**
      * Number of coldest keys proposed when one commit crosses the watermark.
