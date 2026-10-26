@@ -32,6 +32,12 @@ echo "Creating directory structure..."
 # Copy engine.so to mooncake directory (will be imported by transfer module)
 cp build/mooncake-integration/engine.*.so mooncake-wheel/mooncake/engine.so
 
+if [ -f 'build/mooncake-asio/libasio.so' ]; then
+  cp build/mooncake-asio/libasio.so mooncake-wheel/mooncake/libasio.so
+else
+  cp build/mooncake-common/libasio.so mooncake-wheel/mooncake/libasio.so
+fi
+
 # Copy store.so to mooncake directory
 if [ -f build/mooncake-integration/store.*.so ]; then
     echo "Copying store.so..."
