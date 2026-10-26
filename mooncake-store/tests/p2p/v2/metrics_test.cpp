@@ -5,6 +5,7 @@
 // produced, and has to be able to see the four things that only V2 can go
 // wrong at. A counter nobody can observe is the same as no counter.
 
+#include <array>
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include <json/json.h>
@@ -161,6 +162,43 @@ TEST_F(V2MetricsTest, UsageGaugeFollowsRealUsage) {
     ASSERT_TRUE(manager_->Delete("metrics/key").has_value());
     EXPECT_EQ(tier_metric_->key_count.value(label), key_count_before)
         << "a removed replica was not uncounted";
+}
+
+// Reclamation is the tier-level fact V2 must not hide: the engine's internal
+// stats were updated, but operator metrics used to stay frozen at zero.
+TEST_F(V2MetricsTest, ReclaimedReplicasUpdateTierMetrics) {
+    static constexpr const char* kTinyDram = R"({
+        "tiers": [
+            {"type": "DRAM", "capacity": 1048576, "priority": 100,
+             "allocator_type": "OFFSET"}
+        ]
+    })";
+    Build(kTinyDram);
+
+    ASSERT_EQ(manager_->GetTierViews().size(), 1U);
+    const UUID tier_id = manager_->GetTierViews().front().id;
+    const std::array<std::string, 1> label = {MakeTierSegmentName(tier_id)};
+    const int64_t evicted_before = tier_metric_->evicted_keys.value(label);
+    const int64_t key_count_before = tier_metric_->key_count.value(label);
+
+    // More than the tier can hold. The later Puts must reclaim older
+    // replicas, otherwise they fail with an allocation error.
+    constexpr int kPuts = 8;
+    for (int i = 0; i < kPuts; ++i) {
+        ASSERT_TRUE(Put("metrics/evicted/" + std::to_string(i),
+                        Payload(256 * 1024, 'e'))
+                        .has_value());
+    }
+
+    const int64_t evicted_after = tier_metric_->evicted_keys.value(label);
+    const int64_t key_count_after = tier_metric_->key_count.value(label);
+    EXPECT_GT(evicted_after, evicted_before)
+        << "V2 reclamation did not update the tier eviction counter";
+    EXPECT_LT(key_count_after, key_count_before + kPuts)
+        << "evicted replicas were still counted as live keys";
+    EXPECT_EQ(key_count_after + (evicted_after - evicted_before),
+              key_count_before + kPuts)
+        << "key count and eviction count disagree on the same replicas";
 }
 
 // A caller that never waits on its handle must not stall shutdown, and the

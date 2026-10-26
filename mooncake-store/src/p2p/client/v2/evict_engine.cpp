@@ -11,12 +11,14 @@ namespace mooncake::v2 {
 EvictEngine::EvictEngine(MultiTiler* tilers, BlockRegistry* registry,
                          MetadataCallbacks* callbacks,
                          std::shared_ptr<Clock> clock,
-                         std::function<void(const std::string&)> on_evicted)
+                         std::function<void(const std::string&)> on_evicted,
+                         std::function<void(const UUID&)> on_replica_evicted)
     : tilers_(tilers),
       registry_(registry),
       callbacks_(callbacks),
       clock_(std::move(clock)),
-      on_evicted_(std::move(on_evicted)) {
+      on_evicted_(std::move(on_evicted)),
+      on_replica_evicted_(std::move(on_replica_evicted)) {
     CHECK(tilers_ != nullptr && registry_ != nullptr && clock_ != nullptr)
         << "EvictEngine requires tilers, a registry and a clock";
 }
@@ -96,6 +98,11 @@ EvictEngine::EvictOutcome EvictEngine::EvictVictim(TilerManager& tiler,
                      << "; the object is gone. Offload had not copied it to a "
                         "slower tier before this tier filled up.";
     }
+
+    // Report the replica before taking the stats mutex. This is still after
+    // every internal guard has been released, so an observer can safely count
+    // a tier-level fact without extending a request's critical section.
+    if (on_replica_evicted_) on_replica_evicted_(tiler.Id());
 
     {
         std::lock_guard<std::mutex> lock(stats_mu_);

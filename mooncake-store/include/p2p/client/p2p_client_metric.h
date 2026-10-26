@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <ylt/metric/gauge.hpp>
@@ -308,6 +309,45 @@ struct P2PClientMetric : public ClientMetric {
 
     void serialize(std::string& str) override;
     std::string summary_metrics() override;
+
+    /**
+     * @brief Expose a V2-only counter in the client's summary output.
+     *
+     * The generic P2P metric object does not own the data manager, so V2
+     * installs this callback after creating it. V1 leaves it unset and the
+     * summary omits the V2 section.
+     */
+    void SetV2EventsDroppedProvider(std::function<uint64_t()> provider) {
+        v2_events_dropped_provider_ = std::move(provider);
+    }
+
+    /**
+     * @brief Expose V2 MigrationEngine counters and per-route queue state.
+     *
+     * The generic P2P metric object does not own the data manager, so V2
+     * installs this callback after creating it. V1 leaves it unset and the
+     * summary omits the V2 migration section.
+     */
+    void SetV2MigrationStatsProvider(std::function<std::string()> provider) {
+        v2_migration_stats_provider_ = std::move(provider);
+    }
+
+    /**
+     * @brief Expose V2 request-path allocation failure/reclaim outcomes.
+     *
+     * `NO_AVAILABLE_HANDLE` is a client-visible allocation failure, but its
+     * internal cause is only distinguishable when the synchronous reclaim
+     * counters are visible together with offload scan and migration metrics.
+     */
+    void SetV2AllocationFailureStatsProvider(
+        std::function<std::string()> provider) {
+        v2_allocation_failure_stats_provider_ = std::move(provider);
+    }
+
+   private:
+    std::function<uint64_t()> v2_events_dropped_provider_;
+    std::function<std::string()> v2_migration_stats_provider_;
+    std::function<std::string()> v2_allocation_failure_stats_provider_;
 };
 
 }  // namespace mooncake

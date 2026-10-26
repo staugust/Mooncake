@@ -464,6 +464,35 @@ tl::expected<void, ErrorCode> DataManagerV2::Init() {
     }
     tilers_.Rebuild();
 
+    // V1 mounts every tier while TieredBackend is initialized. V2 has to keep
+    // that lifecycle invariant: the Master first sees the client with an empty
+    // segment list, so heartbeat usage for a tiler that was never mounted is
+    // rejected as SEGMENT_NOT_FOUND.
+    if (metadata_callbacks_.segment_sync) {
+        for (const auto& tiler : tilers_.by_priority) {
+            const TierView view = tiler->GetView();
+            P2PSegment segment;
+            segment.id = view.id;
+            segment.name = view.GetName();
+            segment.size = view.capacity;
+            segment.priority = view.priority;
+            segment.tags = view.tags;
+            segment.memory_type = view.type;
+            segment.usage = view.usage;
+
+            auto mounted =
+                metadata_callbacks_.segment_sync(segment, /*mount=*/true);
+            if (!mounted) {
+                LOG(ERROR) << "Failed to mount V2 tier with Master"
+                           << ", tiler_id=" << view.id
+                           << ", tiler_name=" << view.GetName()
+                           << ", capacity=" << view.capacity
+                           << ", error=" << mounted.error();
+                return tl::make_unexpected(mounted.error());
+            }
+        }
+    }
+
     std::vector<UUID> tiler_ids;
     tiler_ids.reserve(tilers_.Size());
     for (const auto& tiler : tilers_.by_priority) {
@@ -520,6 +549,7 @@ tl::expected<void, ErrorCode> DataManagerV2::Init() {
             return AllocateWithPolicy(*tiler, size, alignment, source);
         },
         clock_, config_.migration);
+    migration_engine_->SetTierMetric(tier_metric_.get());
 
     event_center_ = std::make_shared<EventCenter>(config_.events);
 
@@ -559,6 +589,11 @@ tl::expected<void, ErrorCode> DataManagerV2::Init() {
             // stops being tracked, or the tracker grows for the process
             // lifetime and reports keys that no longer exist.
             frequency_tracker_->Remove(key);
+        },
+        [this](const UUID& tiler_id) {
+            if (tier_metric_ == nullptr) return;
+            tier_metric_->OnReplicaRemoved(tiler_id);
+            tier_metric_->OnEvicted(tiler_id);
         });
 
     const size_t workers = std::max<size_t>(1, config_.movement_worker_count);
@@ -643,6 +678,9 @@ tl::expected<MutableBlock, ErrorCode> DataManagerV2::AllocateWithPolicy(
     // The matching fact event was already published by TilerManager::Allocate.
     auto& counters = allocation_failure_metrics_->For(tiler.Id(), source);
     counters.failures.fetch_add(1, std::memory_order_relaxed);
+    counters.last_size_bytes.store(size_bytes, std::memory_order_relaxed);
+    counters.last_free_bytes.store(tiler.FreeBytes(),
+                                   std::memory_order_relaxed);
 
     const AllocationFailurePolicyConfig policy =
         AllocationPolicyFor(tiler.Id());
@@ -1746,12 +1784,27 @@ uint64_t DataManagerV2::HotKeyTruncationCount() const {
                               : 0;
 }
 
+std::string DataManagerV2::MigrationStatsString() const {
+    if (migration_engine_ == nullptr) {
+        return "migration_engine=unavailable\n";
+    }
+    return migration_engine_->StatsString();
+}
+
+std::string DataManagerV2::AllocationFailureStatsString() const {
+    if (allocation_failure_metrics_ == nullptr) {
+        return "";
+    }
+    return allocation_failure_metrics_->Serialize();
+}
+
 DataManagerV2Metrics DataManagerV2::Metrics() const {
     DataManagerV2Metrics metrics;
     if (event_center_) {
         const EventCenterMetrics events = event_center_->Metrics();
         metrics.lifecycle_event_inline_applied =
             events.lifecycle_event_inline_applied;
+        metrics.events_dropped = events.events_dropped;
     }
     if (migration_engine_) {
         metrics.movement_commands_dropped =

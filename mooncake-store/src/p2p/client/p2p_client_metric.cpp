@@ -735,6 +735,21 @@ std::string P2PClientMetric::summary_metrics() {
     ss << "=== P2P Key Retention ===\n";
     ss << key_retention->summary_metrics();
 
+    if (v2_events_dropped_provider_) {
+        ss << "=== P2P Data Manager V2 ===\n";
+        ss << "events_dropped=" << v2_events_dropped_provider_() << "\n";
+    }
+
+    if (v2_migration_stats_provider_) {
+        ss << "=== P2P Data Manager V2 Migration ===\n";
+        ss << v2_migration_stats_provider_();
+    }
+
+    if (v2_allocation_failure_stats_provider_) {
+        ss << "=== P2P Data Manager V2 Allocation Failure ===\n";
+        ss << v2_allocation_failure_stats_provider_();
+    }
+
     return ss.str();
 }
 

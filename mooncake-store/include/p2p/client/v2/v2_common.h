@@ -73,6 +73,12 @@ struct AllocationFailureCounters {
     std::atomic<uint64_t> retry_succeeded{0};
     std::atomic<uint64_t> retry_failed{0};
     std::atomic<uint64_t> evict_timed_out{0};
+
+    // Intentionally unordered gauges rather than counters: they identify the
+    // latest failure shape and make "free bytes >= requested bytes" visible,
+    // which separates simple exhaustion from fragmentation or racing writers.
+    std::atomic<uint64_t> last_size_bytes{0};
+    std::atomic<uint64_t> last_free_bytes{0};
 };
 
 /**
@@ -93,6 +99,14 @@ class AllocationFailureMetrics {
      */
     AllocationFailureCounters& For(const UUID& tiler_id,
                                    AllocationSource source);
+
+    /**
+     * @brief Prometheus text for the allocation-reclaim funnel.
+     *
+     * The tier map is fixed after construction, so this is a read-only
+     * traversal of atomic counters and does not take a data-path lock.
+     */
+    std::string Serialize() const;
 
    private:
     std::unordered_map<
