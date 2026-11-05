@@ -1,0 +1,55 @@
+mooncake-store/tests/p2p/CMakeLists.txt
+  s_5efc03619cb7bc::t_e3c951ef0a00e0 135
+mooncake-store/src/p2p/client/data_manager/v2/migration_engine.cpp
+  s_5efc03619cb7bc::t_aaecc0800166d8 241-257,260-267,270-272,275-283
+  s_5efc03619cb7bc::t_3c07116356bb73 524-527
+  s_5efc03619cb7bc::t_3da5240d69cd3f 258-259,268-269,273-274
+mooncake-store/tests/p2p/v2/migration_engine_test.cpp
+  s_5efc03619cb7bc::t_3da5240d69cd3f 1168-1169,1180,1204,1206-1209,1221-1222,1239,1258,1267-1268,1272-1273
+  s_5efc03619cb7bc::t_96f1d6f10eb006 1170-1179,1181-1203,1205,1210-1220,1223-1226,1228-1238,1240-1257,1259-1266,1269-1271,1274-1278
+  s_5efc03619cb7bc::t_e3c951ef0a00e0 1227
+mooncake-store/src/p2p/client/data_manager/v2/data_manager_v2.cpp
+  s_5efc03619cb7bc::t_0139ab4b5c7ece 4-5,8,37-51,54-70,73-81,87-100,115-129,138-157,160-173,176-194,199-205,208-215,219-228,232-237,241
+  s_5efc03619cb7bc::t_5095217298f8df 52-53,71-72,82-86,106-107,130-137,158-159,174-175,195-196,206-207,216-217,229-230,238-239,352-353,387-389,394-395,420-421,447-448,454-455,538-539,558-559,562-563,565-566,718-719,741-742,748-753,756-765,767-768,770-774
+  s_5efc03619cb7bc::t_3c07116356bb73 556-557,560-561,564,655-658
+  s_5efc03619cb7bc::t_1cc4df6682917c 713,728-731,737-740,743-747,754-755,766,769,775-778
+  s_5efc03619cb7bc::t_42952ffa7248ea 101-105,108-114,336-351,354-386,390-393,396-419,422-433,456-457,489-490,492-496,498-499,501-505
+  s_5efc03619cb7bc::t_94efacb1b60cb0 434
+mooncake-store/conf/datamanager_v2_full_example.json
+  s_5efc03619cb7bc::t_e0ecdea2534a04 10-16,36-39,72,75-99,106,108-109,118
+mooncake-store/conf/datamanager_v2_configuration.md
+  s_5efc03619cb7bc::t_96f1d6f10eb006 47-53
+  s_5efc03619cb7bc::t_6b7a22c47668e6 1-46,54-108
+mooncake-store/tests/p2p/v2/config_test.cpp
+  s_5efc03619cb7bc::t_b4de1f721c3131 17-18,22,225-267,270,274-275,298-318,323-325,328-329,335,360-361,364-416,460,474-482,491-497,502-505
+  s_5efc03619cb7bc::t_0bbb2742d8b37c 223-224,268-269,271-273,280-283,291-292,319-322,326-327,330-334,336-359,362-363,424-426,431-432,452-453,461-473,483-490,498-501
+  s_5efc03619cb7bc::t_ed35c2c23819ff 276-279,284-290,293-297
+  s_5efc03619cb7bc::t_82eee53c2e65b0 417-423,427-430,433-451,454-459
+  s_5efc03619cb7bc::t_52b08ee67adbd2 506
+mooncake-store/tests/p2p/v2/block_pool_test.cpp
+  s_5efc03619cb7bc::t_82eee53c2e65b0 1250-1268
+mooncake-store/conf/datamanager_v2_allocator_capacity.md
+  s_5efc03619cb7bc::t_6b7a22c47668e6 37-40,61-63,65-66
+mooncake-store/src/p2p/client/data_manager_factory.cpp
+  s_5efc03619cb7bc::t_3c07116356bb73 78-79
+  s_5efc03619cb7bc::t_ed35c2c23819ff 75-76
+mooncake-store/src/p2p/client/data_manager/v2/block_pool.cpp
+  s_5efc03619cb7bc::t_5095217298f8df 785-788
+  s_5efc03619cb7bc::t_1cc4df6682917c 15,773-784,789-791
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "bbe71981718a71f82b6eec581f99d448b3ec67df",
+  "prompts": {},
+  "sessions": {
+    "s_5efc03619cb7bc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1a136-4d2c-7021-9d1f-618727c8b3a8",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "augusto.yjh <augusto.yjh@antgroup.com>"
+    }
+  }
+}
